@@ -1,0 +1,99 @@
+name: Update Podcast Feed
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+    inputs:
+      max_episodes:
+        description: 'Max new episodes to download'
+        default: '5'
+        type: string
+
+concurrency:
+  group: podcast-update
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download new episodes
+        run: python download_audio.py --max-episodes ${{ inputs.max_episodes || '5' }}
+
+      - name: Check for new audio files
+        id: check_audio
+        run: |
+          if ls audio/*.mp3 1>/dev/null 2>&1; then
+            echo "has_new=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_new=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release if needed
+        if: steps.check_audio.outputs.has_new == 'true'
+        run: gh release create episodes --title "Podcast Episodes" --notes "Audio files for podcast feed" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload audio files to release
+        if: steps.check_audio.outputs.has_new == 'true'
+        run: |
+          for f in audio/*.mp3; do
+            if [ -f "$f" ]; then
+              echo "Uploading $f..."
+              gh release upload episodes "$f" --clobber
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mark episodes as published
+        if: steps.check_audio.outputs.has_new == 'true'
+        run: |
+          python -c "
+          import json
+          with open('episodes.json', 'r') as f:
+              episodes = json.load(f)
+          for ep in episodes:
+              ep['published'] = True
+          with open('episodes.json', 'w') as f:
+              json.dump(episodes, f, indent=2)
+          "
+
+      - name: Generate RSS feed
+        run: python generate_feed.py
+
+      - name: Commit updated episodes.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add episodes.json
+          git diff --cached --quiet || git commit -m "Update episodes catalog"
+          git push
+
+      - name: Deploy feed to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          keep_files: true
