@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:ns0="http://www.w3.org/2005/Atom" xmlns:ns1="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title>AI News &amp; Strategy Daily (YouTube Audio)</title>
+    <description>Audio extracted from Nate B. Jones' YouTube channel 'AI News &amp; Strategy Daily'. Daily AI strategy and news for the AI curious, builders, and executives.</description>
+    <link>https://www.youtube.com/@natebjones</link>
+    <language>en</language>
+    <generator>youtube_podcasts</generator>
+    <ns0:link href="https://epopeya123.github.io/youtube_podcasts/feed.xml" rel="self" type="application/rss+xml"/>
+    <ns1:author>Nate B. Jones</ns1:author>
+    <ns1:explicit>false</ns1:explicit>
+    <ns1:category text="Technology"/>
+    <lastBuildDate>Fri, 27 Mar 2026 22:24:16 +0000</lastBuildDate>
+  </channel>
+</rss>
