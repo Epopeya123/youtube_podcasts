@@ -139,8 +139,7 @@ def main():
         episodes = json.load(f)
 
     if not episodes:
-        print("No episodes found. Run download_audio.py first.")
-        sys.exit(1)
+        print("No episodes yet. Generating empty feed.")
 
     print(f"Generating RSS feed for {len(episodes)} episodes...")
 
