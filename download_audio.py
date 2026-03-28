@@ -81,10 +81,12 @@ def fetch_videos_from_rss(channel_id):
         for entry in entries:
             video_id_el = entry.find("yt:videoId", ns)
             title_el = entry.find("atom:title", ns)
+            title = title_el.text if title_el is not None else ""
+            # Skip YouTube Shorts (typically very short, have hashtag-heavy titles)
             if video_id_el is not None:
                 videos.append({
                     "id": video_id_el.text,
-                    "title": title_el.text if title_el is not None else "",
+                    "title": title,
                 })
         print(f"Found {len(videos)} videos from RSS feed.")
         return videos

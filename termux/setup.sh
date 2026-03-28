@@ -12,12 +12,12 @@ echo "[1/5] Updating Termux packages..."
 pkg update -y && pkg upgrade -y
 
 # Install required packages
-echo "[2/5] Installing Python, ffmpeg, and tools..."
-pkg install -y python ffmpeg cronie termux-services
+echo "[2/5] Installing Python, ffmpeg, Node.js, and tools..."
+pkg install -y python ffmpeg nodejs-lts cronie termux-services
 
-# Install yt-dlp
+# Install yt-dlp and its YouTube challenge solver
 echo "[3/5] Installing yt-dlp..."
-pip install yt-dlp
+pip install yt-dlp yt-dlp-ejs
 
 # Request storage permission
 echo "[4/5] Requesting storage access..."

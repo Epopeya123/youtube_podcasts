@@ -34,8 +34,13 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      - name: Install Deno (JavaScript runtime for yt-dlp)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt yt-dlp-ejs
 
       - name: Download new episodes
         run: python download_audio.py --max-episodes ${{ inputs.max_episodes || '5' }}
