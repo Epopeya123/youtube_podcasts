@@ -431,9 +431,28 @@ class YouTubePodcastApp(MDApp):
             ContentValues = autoclass('android.content.ContentValues')
             MediaStore = autoclass('android.provider.MediaStore$Audio$Media')
             String = autoclass('java.lang.String')
+            Build_VERSION = autoclass('android.os.Build$VERSION')
 
             activity = PythonActivity.mActivity
             resolver = activity.getContentResolver()
+
+            # API 29+ required for MediaStore relative_path
+            if Build_VERSION.SDK_INT < 29:
+                # Fallback for older Android: share via file URI with StrictMode disabled
+                Clock.schedule_once(lambda dt: self._share_via_file_uri(filepath))
+                return
+
+            # Detect MIME type from file extension
+            ext = os.path.splitext(filename)[1].lower()
+            mime_types = {
+                '.m4a': 'audio/mp4',
+                '.mp4': 'audio/mp4',
+                '.mp3': 'audio/mpeg',
+                '.webm': 'audio/webm',
+                '.opus': 'audio/ogg',
+                '.ogg': 'audio/ogg',
+            }
+            mime_type = mime_types.get(ext, 'audio/*')
 
             # Delete any previous MediaStore entry with same name
             try:
@@ -448,7 +467,7 @@ class YouTubePodcastApp(MDApp):
             # Insert into MediaStore
             values = ContentValues()
             values.put(String("_display_name"), String(filename))
-            values.put(String("mime_type"), String("audio/mp4"))
+            values.put(String("mime_type"), String(mime_type))
             values.put(String("relative_path"), String("Music/YouTubePodcasts/"))
 
             uri = resolver.insert(MediaStore.EXTERNAL_CONTENT_URI, values)
@@ -495,6 +514,35 @@ class YouTubePodcastApp(MDApp):
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             Clock.schedule_once(lambda dt, m=str(e)[:100]: self._share_error(m))
+
+    def _share_via_file_uri(self, filepath):
+        """Fallback share for Android API < 29 using file:// URI (StrictMode disabled)."""
+        try:
+            from jnius import autoclass, cast
+            Intent = autoclass('android.content.Intent')
+            Uri = autoclass('android.net.Uri')
+            File = autoclass('java.io.File')
+            String = autoclass('java.lang.String')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
+            java_file = File(filepath)
+            uri = Uri.fromFile(java_file)
+            intent = Intent()
+            intent.setAction(Intent.ACTION_SEND)
+            intent.setType("audio/*")
+            intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            title = String("Share audio")
+            chooser = Intent.createChooser(intent, cast('java.lang.CharSequence', title))
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            PythonActivity.mActivity.startActivity(chooser)
+            self.status_text = "Sharing..."
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            self.status_text = f"Error sharing: {str(e)[:100]}"
+            safe_snackbar("Could not share file")
+        finally:
+            self._is_sharing = False
 
     def _share_error(self, msg):
         self._is_sharing = False
