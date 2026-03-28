@@ -124,6 +124,19 @@ def get_download_dir():
     return path
 
 
+def _test_ffmpeg(ffmpeg_path):
+    """Test if ffmpeg binary actually runs on this device."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            [ffmpeg_path, "-version"],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def setup_ffmpeg():
     """Find or set up FFmpeg binary for audio conversion."""
     try:
@@ -131,61 +144,39 @@ def setup_ffmpeg():
         ffmpeg_dest = os.path.join(data_dir, "ffmpeg")
         ffprobe_dest = os.path.join(data_dir, "ffprobe")
 
-        # Already set up from a previous run? (need BOTH ffmpeg and ffprobe)
-        if os.path.exists(ffmpeg_dest) and os.access(ffmpeg_dest, os.X_OK) \
-                and os.path.exists(ffprobe_dest) and os.access(ffprobe_dest, os.X_OK):
+        # Already set up and verified from a previous run?
+        if os.path.exists(ffmpeg_dest) and os.path.exists(ffprobe_dest) \
+                and _test_ffmpeg(ffmpeg_dest):
             return ffmpeg_dest
 
         # Search for the bundled binary
         search_paths = []
-
-        # Path relative to this script
         try:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             search_paths.append(os.path.join(script_dir, "ffmpeg_bin", "ffmpeg"))
         except Exception:
             pass
-
-        # Common Android private data paths
         search_paths.extend([
             os.path.join(data_dir, "app", "ffmpeg_bin", "ffmpeg"),
             "/data/data/org.epopeya123.ytpodcasts/files/app/ffmpeg_bin/ffmpeg",
         ])
 
-        # Also check if Termux's ffmpeg is available
-        search_paths.extend([
-            "/data/data/com.termux/files/usr/bin/ffmpeg",
-        ])
-
         for src in search_paths:
-            if os.path.exists(src):
-                # Try to make it executable in-place first
-                try:
-                    os.chmod(src, os.stat(src).st_mode | stat.S_IEXEC | stat.S_IXUSR | stat.S_IXGRP)
-                    if os.access(src, os.X_OK):
-                        # Also need ffprobe - ffmpeg can act as ffprobe when named ffprobe
-                        src_dir = os.path.dirname(src)
-                        ffprobe_path = os.path.join(src_dir, "ffprobe")
-                        if not os.path.exists(ffprobe_path):
-                            shutil.copy2(src, ffprobe_path)
-                            os.chmod(ffprobe_path, 0o755)
-                        return src
-                except Exception:
-                    pass
+            if not os.path.exists(src):
+                continue
 
-                # Copy to data dir and make executable
-                try:
-                    shutil.copy2(src, ffmpeg_dest)
-                    os.chmod(ffmpeg_dest, 0o755)
-                    # Create ffprobe copy too
-                    ffprobe_dest = os.path.join(data_dir, "ffprobe")
-                    if not os.path.exists(ffprobe_dest):
-                        shutil.copy2(src, ffprobe_dest)
-                        os.chmod(ffprobe_dest, 0o755)
-                    if os.access(ffmpeg_dest, os.X_OK):
-                        return ffmpeg_dest
-                except Exception:
-                    pass
+            # Copy to data dir (writable + executable)
+            try:
+                shutil.copy2(src, ffmpeg_dest)
+                os.chmod(ffmpeg_dest, 0o755)
+                shutil.copy2(src, ffprobe_dest)
+                os.chmod(ffprobe_dest, 0o755)
+            except Exception:
+                continue
+
+            # Verify it actually runs
+            if _test_ffmpeg(ffmpeg_dest):
+                return ffmpeg_dest
 
         return None
     except Exception:
@@ -306,9 +297,9 @@ class YouTubePodcastApp(MDApp):
         # Set up FFmpeg
         FFMPEG_PATH = setup_ffmpeg()
         if FFMPEG_PATH:
-            self.status_text = "Ready (MP3 conversion enabled)"
+            self.status_text = "Ready (MP3 mode)"
         else:
-            self.status_text = "Ready (no FFmpeg - audio will be m4a)"
+            self.status_text = "Ready (m4a mode - FFmpeg binary can't run on this device)"
 
         return Builder.load_string(KV)
 
