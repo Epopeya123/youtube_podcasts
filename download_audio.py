@@ -192,6 +192,20 @@ def download_audio(video_id, output_dir):
     return None
 
 
+def extract_video_id(url):
+    """Extract video ID from a YouTube URL."""
+    import re
+    patterns = [
+        r'(?:v=|/v/|youtu\.be/|/shorts/)([a-zA-Z0-9_-]{11})',
+        r'^([a-zA-Z0-9_-]{11})$',  # bare video ID
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Download YouTube audio as podcast episodes")
     parser.add_argument(
@@ -206,6 +220,12 @@ def main():
         default=AUDIO_DIR,
         help="Directory to save MP3 files (default: audio/)",
     )
+    parser.add_argument(
+        "--url",
+        type=str,
+        default=None,
+        help="Download a specific YouTube video URL instead of checking the channel",
+    )
     args = parser.parse_args()
 
     print(f"Loading existing episodes from {EPISODES_FILE}...")
@@ -213,6 +233,27 @@ def main():
     existing_ids = get_existing_ids(episodes)
     print(f"Found {len(episodes)} existing episodes.")
 
+    # Single video mode
+    if args.url:
+        video_id = extract_video_id(args.url)
+        if not video_id:
+            print(f"ERROR: Could not extract video ID from: {args.url}")
+            sys.exit(1)
+        if video_id in existing_ids:
+            print(f"Already downloaded: {video_id}")
+            return
+        print(f"Downloading single video: {args.url}")
+        metadata = download_audio(video_id, args.output_dir)
+        if metadata:
+            episodes.append(metadata)
+            save_episodes(episodes)
+            print(f"Saved: {metadata['filename']} ({metadata['filesize'] / 1024 / 1024:.1f} MB)")
+        else:
+            print("Download failed.")
+            sys.exit(1)
+        return
+
+    # Channel mode
     print("Fetching video list...")
     videos = fetch_video_list(args.max_episodes)
 
