@@ -149,10 +149,9 @@ def download_audio(video_id, output_dir):
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
-                "preferredquality": "64",
+                "preferredquality": "128",
             }
         ],
-        "postprocessor_args": ["-ac", "1"],
         "outtmpl": output_template,
         "quiet": False,
         "no_warnings": False,
