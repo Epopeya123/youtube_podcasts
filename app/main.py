@@ -9,34 +9,53 @@ import traceback
 from datetime import datetime
 
 # === CRASH LOGGING (runs before ANY imports that could fail) ===
-CRASH_LOG_PATH = None
+CRASH_LOG_PATHS = []
 
 def setup_crash_logging():
-    """Set up crash log in app-private storage (always writable, no permissions needed)."""
-    global CRASH_LOG_PATH
+    """Set up crash log in multiple locations for maximum findability."""
+    global CRASH_LOG_PATHS
+    dirs_to_try = []
+
+    # 1. App-private dir (always writable, no permissions)
     try:
-        # Try app-private dir first (always writable on Android)
         from android.storage import app_storage_path
-        crash_dir = app_storage_path()
+        dirs_to_try.append(app_storage_path())
     except ImportError:
-        crash_dir = os.path.expanduser("~")
+        pass
+
+    # 2. External app dir (visible in file managers)
     try:
-        os.makedirs(crash_dir, exist_ok=True)
-        CRASH_LOG_PATH = os.path.join(crash_dir, "crash_log.txt")
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        activity = PythonActivity.mActivity
+        ext_dir = activity.getExternalFilesDir(None)
+        if ext_dir:
+            dirs_to_try.append(ext_dir.getAbsolutePath())
     except Exception:
-        CRASH_LOG_PATH = "/tmp/crash_log.txt"
+        pass
+
+    # 3. Home dir (desktop fallback)
+    dirs_to_try.append(os.path.expanduser("~"))
+
+    for d in dirs_to_try:
+        try:
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, "crash_log.txt")
+            CRASH_LOG_PATHS.append(path)
+        except Exception:
+            pass
 
 def log_crash(exc_type, exc_value, exc_tb):
     error_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    try:
-        if CRASH_LOG_PATH:
-            with open(CRASH_LOG_PATH, "a") as f:
+    for path in CRASH_LOG_PATHS:
+        try:
+            with open(path, "a") as f:
                 f.write(f"\n{'='*60}\n")
                 f.write(f"CRASH at {datetime.now()}\n")
                 f.write(error_text)
                 f.write(f"\n{'='*60}\n")
-    except Exception:
-        pass
+        except Exception:
+            pass
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 setup_crash_logging()
@@ -49,7 +68,6 @@ try:
     from kivy.metrics import dp
     from kivy.properties import StringProperty, BooleanProperty
     from kivymd.app import MDApp
-    from kivymd.uix.snackbar import Snackbar
     import yt_dlp
 except Exception:
     log_crash(*sys.exc_info())
@@ -69,7 +87,6 @@ def get_data_dir():
 
 def get_download_dir():
     """Get download dir with multiple fallbacks."""
-    # Try 1: App-private external dir (scoped storage safe)
     try:
         from jnius import autoclass
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
@@ -82,7 +99,6 @@ def get_download_dir():
     except Exception:
         pass
 
-    # Try 2: App internal storage
     try:
         from android.storage import app_storage_path
         path = os.path.join(app_storage_path(), "Podcasts")
@@ -91,10 +107,18 @@ def get_download_dir():
     except Exception:
         pass
 
-    # Try 3: Home directory (desktop fallback)
     path = os.path.expanduser("~/Podcasts/AI_News_NateBJones")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def safe_snackbar(text):
+    """Show a snackbar notification without crashing."""
+    try:
+        from kivymd.uix.snackbar import Snackbar
+        Snackbar(text=str(text)).open()
+    except Exception:
+        pass
 
 
 EPISODES_FILE = None
@@ -194,18 +218,15 @@ class YouTubePodcastApp(MDApp):
         return Builder.load_string(KV)
 
     def on_start(self):
-        # Request permissions first, then load data after a short delay
         self.request_android_permissions()
-        # Delay loading to let permissions settle
         Clock.schedule_once(lambda dt: self._safe_load(), 1.0)
 
     def _safe_load(self):
-        """Load episodes safely after permissions are granted."""
         try:
             self.load_episodes()
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
-            self.status_text = "Ready (no episodes loaded)"
+            self.status_text = "Ready"
         try:
             self._handle_android_intent()
         except Exception:
@@ -224,7 +245,6 @@ class YouTubePodcastApp(MDApp):
         try:
             from android.permissions import request_permissions, Permission
             perms = [Permission.INTERNET]
-            # Only request storage permissions if available
             try:
                 perms.append(Permission.READ_MEDIA_AUDIO)
             except AttributeError:
@@ -245,8 +265,6 @@ class YouTubePodcastApp(MDApp):
             activity.bind(on_new_intent=self._on_new_intent)
             intent = activity.getIntent()
             self._process_intent(intent)
-        except ImportError:
-            pass
         except Exception:
             pass
 
@@ -262,7 +280,7 @@ class YouTubePodcastApp(MDApp):
                 url = intent.getStringExtra("android.intent.extra.TEXT")
                 if url and self.extract_video_id(url):
                     self.root.ids.url_input.text = url
-                    Snackbar(text="YouTube link received! Tap Download.").open()
+                    safe_snackbar("YouTube link received! Tap Download.")
         except Exception:
             pass
 
@@ -276,9 +294,13 @@ class YouTubePodcastApp(MDApp):
             pass
 
     def load_episodes(self):
-        from kivymd.uix.list import TwoLineAvatarListItem, IconLeftWidget
+        try:
+            from kivymd.uix.list import TwoLineAvatarListItem, IconLeftWidget
+        except ImportError:
+            return
+
         episodes = self._read_episodes()
-        if not hasattr(self.root, 'ids') or 'episode_list' not in self.root.ids:
+        if not self.root or not hasattr(self.root, 'ids') or 'episode_list' not in self.root.ids:
             return
         episode_list = self.root.ids.episode_list
         episode_list.clear_widgets()
@@ -333,50 +355,58 @@ class YouTubePodcastApp(MDApp):
         return None
 
     def start_download(self):
-        if self.is_downloading:
-            Snackbar(text="Download already in progress...").open()
-            return
+        try:
+            if self.is_downloading:
+                safe_snackbar("Download already in progress...")
+                return
 
-        url = self.root.ids.url_input.text.strip()
-        if not url:
-            Snackbar(text="Please paste a YouTube link first").open()
-            return
+            url = self.root.ids.url_input.text.strip()
+            if not url:
+                self.status_text = "Please paste a YouTube link first"
+                return
 
-        video_id = self.extract_video_id(url)
-        if not video_id:
-            Snackbar(text="Invalid YouTube URL").open()
-            return
+            video_id = self.extract_video_id(url)
+            if not video_id:
+                self.status_text = "Invalid YouTube URL"
+                return
 
-        episodes = self._read_episodes()
-        if any(ep.get("id") == video_id for ep in episodes):
-            Snackbar(text="Already downloaded!").open()
-            return
+            episodes = self._read_episodes()
+            if any(ep.get("id") == video_id for ep in episodes):
+                self.status_text = "Already downloaded!"
+                return
 
-        self.is_downloading = True
-        self.root.ids.progress_bar.opacity = 1
-        self.root.ids.progress_bar.value = 0
-        self.root.ids.download_btn.disabled = True
-        self.status_text = "Starting download..."
+            self.is_downloading = True
+            self.root.ids.progress_bar.opacity = 1
+            self.root.ids.progress_bar.value = 0
+            self.root.ids.download_btn.disabled = True
+            self.status_text = "Starting download..."
 
-        thread = threading.Thread(
-            target=self._download_thread,
-            args=(video_id,),
-            daemon=True,
-        )
-        thread.start()
+            thread = threading.Thread(
+                target=self._download_thread,
+                args=(video_id,),
+                daemon=True,
+            )
+            thread.start()
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            self.is_downloading = False
+            self.status_text = f"Error: {e}"
 
     def _download_thread(self, video_id):
         output_template = os.path.join(self.download_dir, "%(id)s.%(ext)s")
 
         def progress_hook(d):
-            if d["status"] == "downloading":
-                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-                downloaded = d.get("downloaded_bytes", 0)
-                if total > 0:
-                    pct = downloaded / total * 100
-                    Clock.schedule_once(lambda dt, p=pct: self._update_progress(p, "Downloading..."))
-            elif d["status"] == "finished":
-                Clock.schedule_once(lambda dt: self._update_progress(95, "Finishing up..."))
+            try:
+                if d["status"] == "downloading":
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    downloaded = d.get("downloaded_bytes", 0)
+                    if total > 0:
+                        pct = downloaded / total * 100
+                        Clock.schedule_once(lambda dt, p=pct: self._update_progress(p, "Downloading..."))
+                elif d["status"] == "finished":
+                    Clock.schedule_once(lambda dt: self._update_progress(95, "Finishing up..."))
+            except Exception:
+                pass
 
         ydl_opts = {
             "format": "bestaudio[ext=m4a]/bestaudio",
@@ -392,40 +422,71 @@ class YouTubePodcastApp(MDApp):
                     f"https://www.youtube.com/watch?v={video_id}",
                     download=True,
                 )
-                if info:
-                    title = info.get("title", "Unknown")
-                    ext = info.get("ext", "m4a")
-                    safe_name = f"{self._sanitize_filename(title)}_{video_id}.{ext}"
-                    src_path = os.path.join(self.download_dir, f"{video_id}.{ext}")
-                    final_path = os.path.join(self.download_dir, safe_name)
+                if not info:
+                    Clock.schedule_once(lambda dt: self._download_error("No video info"))
+                    return
 
-                    if os.path.exists(src_path) and not os.path.exists(final_path):
-                        os.rename(src_path, final_path)
-                    elif not os.path.exists(final_path):
+                title = info.get("title", "Unknown")
+                ext = info.get("ext", "m4a")
+
+                # Find the downloaded file
+                final_path = None
+                possible_names = [
+                    f"{video_id}.{ext}",
+                    f"{video_id}.m4a",
+                    f"{video_id}.webm",
+                    f"{video_id}.opus",
+                ]
+                for name in possible_names:
+                    p = os.path.join(self.download_dir, name)
+                    if os.path.exists(p):
+                        final_path = p
+                        break
+
+                # Fallback: search for any file starting with video_id
+                if not final_path:
+                    try:
                         for f in os.listdir(self.download_dir):
                             if f.startswith(video_id):
                                 final_path = os.path.join(self.download_dir, f)
                                 break
+                    except Exception:
+                        pass
 
-                    if not os.path.exists(final_path):
-                        Clock.schedule_once(lambda dt: self._download_error("File not found after download"))
-                        return
+                if not final_path or not os.path.exists(final_path):
+                    Clock.schedule_once(lambda dt: self._download_error("File not found after download"))
+                    return
 
+                # Try to rename to a readable name
+                try:
+                    file_ext = os.path.splitext(final_path)[1]
+                    safe_name = f"{self._sanitize_filename(title)}_{video_id}{file_ext}"
+                    new_path = os.path.join(self.download_dir, safe_name)
+                    if final_path != new_path and not os.path.exists(new_path):
+                        os.rename(final_path, new_path)
+                        final_path = new_path
+                except Exception:
+                    pass  # Keep original filename if rename fails
+
+                filesize = 0
+                try:
                     filesize = os.path.getsize(final_path)
-                    metadata = {
-                        "id": video_id,
-                        "title": title,
-                        "upload_date": info.get("upload_date", ""),
-                        "duration": info.get("duration", 0),
-                        "filename": os.path.basename(final_path),
-                        "filesize": filesize,
-                    }
-                    episodes = self._read_episodes()
-                    episodes.insert(0, metadata)
-                    self._save_episodes(episodes)
-                    Clock.schedule_once(lambda dt, t=title: self._download_complete(t))
-                else:
-                    Clock.schedule_once(lambda dt: self._download_error("No video info"))
+                except Exception:
+                    pass
+
+                metadata = {
+                    "id": video_id,
+                    "title": title,
+                    "upload_date": info.get("upload_date", ""),
+                    "duration": info.get("duration", 0),
+                    "filename": os.path.basename(final_path),
+                    "filesize": filesize,
+                }
+                episodes = self._read_episodes()
+                episodes.insert(0, metadata)
+                self._save_episodes(episodes)
+                Clock.schedule_once(lambda dt, t=title: self._download_complete(t))
+
         except Exception as e:
             msg = str(e).split('\n')[0][:200]
             log_crash(type(e), e, e.__traceback__)
@@ -436,29 +497,43 @@ class YouTubePodcastApp(MDApp):
         return safe.strip()[:60] or "episode"
 
     def _update_progress(self, value, text):
-        self.root.ids.progress_bar.value = value
-        self.status_text = text
+        try:
+            self.root.ids.progress_bar.value = value
+            self.status_text = text
+        except Exception:
+            pass
 
     def _download_complete(self, title):
-        self.is_downloading = False
-        self.root.ids.progress_bar.value = 100
-        Clock.schedule_once(lambda dt: self._hide_progress(), 0.5)
-        self.root.ids.download_btn.disabled = False
-        self.root.ids.url_input.text = ""
-        self.status_text = f"Downloaded: {title}"
-        Snackbar(text="Download complete!").open()
-        self.load_episodes()
+        try:
+            self.is_downloading = False
+            self.root.ids.progress_bar.value = 100
+            Clock.schedule_once(lambda dt: self._hide_progress(), 0.5)
+            self.root.ids.download_btn.disabled = False
+            self.root.ids.url_input.text = ""
+            self.status_text = f"Downloaded: {title}"
+            safe_snackbar("Download complete!")
+            self.load_episodes()
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            self.is_downloading = False
+            self.status_text = "Downloaded (UI refresh failed)"
 
     def _hide_progress(self):
-        self.root.ids.progress_bar.opacity = 0
-        self.root.ids.progress_bar.value = 0
+        try:
+            self.root.ids.progress_bar.opacity = 0
+            self.root.ids.progress_bar.value = 0
+        except Exception:
+            pass
 
     def _download_error(self, error):
-        self.is_downloading = False
-        self.root.ids.progress_bar.opacity = 0
-        self.root.ids.download_btn.disabled = False
-        self.status_text = f"Error: {error}"
-        Snackbar(text="Download failed").open()
+        try:
+            self.is_downloading = False
+            self.root.ids.progress_bar.opacity = 0
+            self.root.ids.download_btn.disabled = False
+            self.status_text = f"Error: {error}"
+            safe_snackbar("Download failed")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
