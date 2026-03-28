@@ -161,6 +161,12 @@ def setup_ffmpeg():
                 try:
                     os.chmod(src, os.stat(src).st_mode | stat.S_IEXEC | stat.S_IXUSR | stat.S_IXGRP)
                     if os.access(src, os.X_OK):
+                        # Also need ffprobe - ffmpeg can act as ffprobe when named ffprobe
+                        src_dir = os.path.dirname(src)
+                        ffprobe_path = os.path.join(src_dir, "ffprobe")
+                        if not os.path.exists(ffprobe_path):
+                            shutil.copy2(src, ffprobe_path)
+                            os.chmod(ffprobe_path, 0o755)
                         return src
                 except Exception:
                     pass
@@ -169,6 +175,11 @@ def setup_ffmpeg():
                 try:
                     shutil.copy2(src, ffmpeg_dest)
                     os.chmod(ffmpeg_dest, 0o755)
+                    # Create ffprobe copy too
+                    ffprobe_dest = os.path.join(data_dir, "ffprobe")
+                    if not os.path.exists(ffprobe_dest):
+                        shutil.copy2(src, ffprobe_dest)
+                        os.chmod(ffprobe_dest, 0o755)
                     if os.access(ffmpeg_dest, os.X_OK):
                         return ffmpeg_dest
                 except Exception:
