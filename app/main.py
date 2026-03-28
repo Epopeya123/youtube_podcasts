@@ -338,7 +338,7 @@ class YouTubePodcastApp(MDApp):
                 continue
 
     def play_episode(self, filename):
-        """Open audio file with the system's default media player."""
+        """Play audio file using Kivy's built-in audio player."""
         if not filename:
             safe_snackbar("No file to play")
             return
@@ -347,43 +347,45 @@ class YouTubePodcastApp(MDApp):
             safe_snackbar("File not found")
             return
         try:
-            # Try Android intent to open with media player
-            from jnius import autoclass, cast
+            from kivy.core.audio import SoundLoader
+            # Stop any currently playing audio
+            if hasattr(self, '_current_sound') and self._current_sound:
+                try:
+                    self._current_sound.stop()
+                except Exception:
+                    pass
+
+            sound = SoundLoader.load(filepath)
+            if sound:
+                sound.play()
+                self._current_sound = sound
+                self.status_text = f"Playing: {filename[:50]}"
+                safe_snackbar("Playing audio")
+            else:
+                # Fallback: try opening with system player via intent
+                self._open_with_system_player(filepath)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            self._open_with_system_player(filepath)
+
+    def _open_with_system_player(self, filepath):
+        """Fallback: open with Android's default audio player."""
+        try:
+            from jnius import autoclass
             Intent = autoclass('android.content.Intent')
             Uri = autoclass('android.net.Uri')
             File = autoclass('java.io.File')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            FileProvider = autoclass('androidx.core.content.FileProvider')
 
             java_file = File(filepath)
-            context = PythonActivity.mActivity
-            uri = FileProvider.getUriForFile(
-                context,
-                context.getPackageName() + ".fileprovider",
-                java_file,
-            )
+            uri = Uri.fromFile(java_file)
             intent = Intent(Intent.ACTION_VIEW)
             intent.setDataAndType(uri, "audio/*")
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            context.startActivity(intent)
-        except Exception:
-            # Fallback: try simpler file URI approach
-            try:
-                from jnius import autoclass
-                Intent = autoclass('android.content.Intent')
-                Uri = autoclass('android.net.Uri')
-                File = autoclass('java.io.File')
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-
-                java_file = File(filepath)
-                uri = Uri.fromFile(java_file)
-                intent = Intent(Intent.ACTION_VIEW)
-                intent.setDataAndType(uri, "audio/*")
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                PythonActivity.mActivity.startActivity(intent)
-            except Exception as e:
-                log_crash(type(e), e, e.__traceback__)
-                safe_snackbar("Could not open audio player")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            PythonActivity.mActivity.startActivity(intent)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            safe_snackbar("Could not play audio")
 
     def _read_episodes(self):
         with _episodes_lock:
