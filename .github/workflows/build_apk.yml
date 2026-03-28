@@ -13,19 +13,22 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build APK with Buildozer
-        uses: digreatbrian/buildozer-action@v2
-        with:
-          python-version: '3.11'
-          buildozer-cmd: buildozer -v android debug
-          work-dir: app
+      - name: Build APK using official Kivy Docker image
+        run: |
+          cd app
+          docker run \
+            --volume "$(pwd)":/home/user/hostcwd \
+            --workdir /home/user/hostcwd \
+            kivy/buildozer:latest \
+            buildozer -v android debug 2>&1 | tee build.log
+          echo "Build finished with exit code: ${PIPESTATUS[0]}"
 
       - name: Check build output
         if: always()
@@ -35,9 +38,12 @@ jobs:
           echo ""
           echo "=== Contents of app/bin/ ==="
           ls -la app/bin/ 2>/dev/null || echo "app/bin/ does not exist"
+          echo ""
+          echo "=== Last 100 lines of build log ==="
+          tail -100 app/build.log 2>/dev/null || echo "No build log found"
 
       - name: Upload APK
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: youtube-podcasts-apk
@@ -49,5 +55,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: app/.buildozer/logs/
+          path: app/build.log
           if-no-files-found: warn
