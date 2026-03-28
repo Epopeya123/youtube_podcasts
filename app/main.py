@@ -125,28 +125,54 @@ def get_download_dir():
 
 
 def setup_ffmpeg():
-    """Copy bundled FFmpeg binary to a writable location and make it executable."""
+    """Find or set up FFmpeg binary for audio conversion."""
     try:
-        # On Android, the app's private files directory is writable
         data_dir = get_data_dir()
         ffmpeg_dest = os.path.join(data_dir, "ffmpeg")
 
+        # Already set up from a previous run?
         if os.path.exists(ffmpeg_dest) and os.access(ffmpeg_dest, os.X_OK):
             return ffmpeg_dest
 
-        # Find bundled ffmpeg in the app package
-        # Buildozer copies source files to the private directory
-        possible_sources = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg_bin", "ffmpeg"),
+        # Search for the bundled binary
+        search_paths = []
+
+        # Path relative to this script
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            search_paths.append(os.path.join(script_dir, "ffmpeg_bin", "ffmpeg"))
+        except Exception:
+            pass
+
+        # Common Android private data paths
+        search_paths.extend([
             os.path.join(data_dir, "app", "ffmpeg_bin", "ffmpeg"),
             "/data/data/org.epopeya123.ytpodcasts/files/app/ffmpeg_bin/ffmpeg",
-        ]
+        ])
 
-        for src in possible_sources:
+        # Also check if Termux's ffmpeg is available
+        search_paths.extend([
+            "/data/data/com.termux/files/usr/bin/ffmpeg",
+        ])
+
+        for src in search_paths:
             if os.path.exists(src):
-                shutil.copy2(src, ffmpeg_dest)
-                os.chmod(ffmpeg_dest, os.stat(ffmpeg_dest).st_mode | stat.S_IEXEC | stat.S_IXUSR | stat.S_IXGRP)
-                return ffmpeg_dest
+                # Try to make it executable in-place first
+                try:
+                    os.chmod(src, os.stat(src).st_mode | stat.S_IEXEC | stat.S_IXUSR | stat.S_IXGRP)
+                    if os.access(src, os.X_OK):
+                        return src
+                except Exception:
+                    pass
+
+                # Copy to data dir and make executable
+                try:
+                    shutil.copy2(src, ffmpeg_dest)
+                    os.chmod(ffmpeg_dest, 0o755)
+                    if os.access(ffmpeg_dest, os.X_OK):
+                        return ffmpeg_dest
+                except Exception:
+                    pass
 
         return None
     except Exception:
@@ -266,6 +292,10 @@ class YouTubePodcastApp(MDApp):
 
         # Set up FFmpeg
         FFMPEG_PATH = setup_ffmpeg()
+        if FFMPEG_PATH:
+            self.status_text = "Ready (MP3 conversion enabled)"
+        else:
+            self.status_text = "Ready (no FFmpeg - audio will be m4a)"
 
         return Builder.load_string(KV)
 
