@@ -371,13 +371,12 @@ class YouTubePodcastApp(MDApp):
         return None
 
     def play_episode(self, filename):
-        """Play audio using Android's native MediaPlayer (in-app)."""
+        """Play audio using Android's native MediaPlayer."""
         filepath = self._get_filepath(filename)
         if not filepath:
             safe_snackbar("File not found")
             return
         try:
-            # Stop any currently playing audio
             if hasattr(self, '_player') and self._player:
                 try:
                     self._player.stop()
@@ -388,7 +387,9 @@ class YouTubePodcastApp(MDApp):
 
             from jnius import autoclass
             MediaPlayer = autoclass('android.media.MediaPlayer')
+            AudioManager = autoclass('android.media.AudioManager')
             player = MediaPlayer()
+            player.setAudioStreamType(AudioManager.STREAM_MUSIC)
             player.setDataSource(filepath)
             player.prepare()
             player.start()
@@ -401,33 +402,54 @@ class YouTubePodcastApp(MDApp):
             safe_snackbar("Could not play audio")
 
     def share_episode(self, filename):
-        """Share audio file via Android share menu."""
+        """Share audio file by copying to Downloads via MediaStore."""
         filepath = self._get_filepath(filename)
         if not filepath:
             safe_snackbar("File not found")
             return
         try:
             from jnius import autoclass, cast
+            import shutil
+
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
             Intent = autoclass('android.content.Intent')
             Uri = autoclass('android.net.Uri')
-            File = autoclass('java.io.File')
+            ContentValues = autoclass('android.content.ContentValues')
+            MediaStore = autoclass('android.provider.MediaStore$Audio$Media')
             String = autoclass('java.lang.String')
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
-            java_file = File(filepath)
-            uri = Uri.fromFile(java_file)
+            activity = PythonActivity.mActivity
+            resolver = activity.getContentResolver()
 
-            intent = Intent()
-            intent.setAction(Intent.ACTION_SEND)
-            intent.setType("audio/*")
-            intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            # Insert into MediaStore (makes file visible to all apps)
+            values = ContentValues()
+            values.put(String("_display_name"), String(filename))
+            values.put(String("mime_type"), String("audio/mp4"))
+            values.put(String("relative_path"), String("Music/YouTubePodcasts"))
 
-            # createChooser needs Java String for title
-            title = String("Share audio")
-            chooser = Intent.createChooser(intent, cast('java.lang.CharSequence', title))
-            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            PythonActivity.mActivity.startActivity(chooser)
+            uri = resolver.insert(MediaStore.EXTERNAL_CONTENT_URI, values)
+            if uri:
+                # Write file data to the MediaStore URI
+                out_stream = resolver.openOutputStream(uri)
+                with open(filepath, 'rb') as f:
+                    data = f.read()
+                out_stream.write(data)
+                out_stream.close()
+
+                # Now share using the content:// URI (accessible by all apps)
+                intent = Intent()
+                intent.setAction(Intent.ACTION_SEND)
+                intent.setType("audio/*")
+                intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+                title = String("Share audio")
+                chooser = Intent.createChooser(intent, cast('java.lang.CharSequence', title))
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                activity.startActivity(chooser)
+                self.status_text = "Sharing..."
+            else:
+                safe_snackbar("Could not prepare file for sharing")
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.status_text = f"Error sharing: {str(e)[:100]}"
@@ -542,7 +564,7 @@ class YouTubePodcastApp(MDApp):
                 pass
 
         ydl_opts = {
-            "format": "bestaudio[ext=m4a]/bestaudio",
+            "format": "bestaudio[ext=m4a]",
             "outtmpl": output_template,
             "quiet": True,
             "no_warnings": True,
