@@ -6,7 +6,7 @@ package.name = ytpodcasts
 package.domain = org.epopeya123
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,xml
-source.include_patterns = ffmpeg_bin/ffmpeg
+source.include_patterns = ffmpeg_bin/*
 version = 1.1.0
 
 # Dependencies
