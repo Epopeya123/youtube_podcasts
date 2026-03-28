@@ -61,7 +61,7 @@ except Exception:
     log_crash(*sys.exc_info())
     raise
 
-# Fix stdout/stderr for Android (use devnull, not StringIO to avoid memory leak)
+# Fix stdout/stderr for Android
 if not hasattr(sys.stdout, 'write') or isinstance(sys.stdout, str):
     sys.stdout = open(os.devnull, 'w')
 if not hasattr(sys.stderr, 'write') or isinstance(sys.stderr, str):
@@ -74,7 +74,6 @@ class YTDLPLogger:
     def error(self, msg): pass
 
 
-# Disable Android StrictMode file URI check (needed for file:// URIs in intents)
 def disable_strict_mode():
     try:
         from jnius import autoclass
@@ -209,6 +208,7 @@ MDScreen:
 class YouTubePodcastApp(MDApp):
     status_text = StringProperty("Ready to download")
     is_downloading = BooleanProperty(False)
+    _is_sharing = False  # Prevent multiple simultaneous shares
 
     def build(self):
         global EPISODES_FILE
@@ -219,7 +219,6 @@ class YouTubePodcastApp(MDApp):
         except Exception as e:
             EPISODES_FILE = None
             log_crash(type(e), e, e.__traceback__)
-            # Surface error instead of silent failure
             self.status_text = "Error: cannot access data directory"
 
         self.theme_cls.theme_style = "Dark"
@@ -319,7 +318,7 @@ class YouTubePodcastApp(MDApp):
 
     def load_episodes(self):
         try:
-            from kivymd.uix.list import TwoLineAvatarListItem, IconLeftWidget
+            from kivymd.uix.list import TwoLineAvatarListItem, IconLeftWidget, OneLineListItem
         except ImportError:
             return
 
@@ -340,19 +339,15 @@ class YouTubePodcastApp(MDApp):
                 play_icon = IconLeftWidget(icon="play-circle")
                 play_icon.bind(on_release=lambda x, f=filename: self.play_episode(f))
 
-                # TwoLineAvatarListItem (proven to work on this build)
                 item = TwoLineAvatarListItem(
                     text=str(ep.get("title", "Unknown")),
-                    secondary_text=f"{mins} min  |  Tap share below  |  {date}",
+                    secondary_text=f"{mins} min  |  {date}",
                 )
-
                 item.add_widget(play_icon)
                 episode_list.add_widget(item)
 
-                # Share button as a separate row under each episode
-                from kivymd.uix.list import OneLineListItem
                 share_item = OneLineListItem(
-                    text="      ↳ Share this episode",
+                    text="      \u21b3 Share this episode",
                     theme_text_color="Custom",
                     text_color=(0.6, 0.4, 1, 0.8),
                     on_release=lambda x, f=filename: self.share_episode(f),
@@ -402,11 +397,32 @@ class YouTubePodcastApp(MDApp):
             safe_snackbar("Could not play audio")
 
     def share_episode(self, filename):
-        """Share audio file by copying to Downloads via MediaStore."""
-        filepath = self._get_filepath(filename)
-        if not filepath:
-            safe_snackbar("File not found")
-            return
+        """Share audio file by copying to Music/YouTubePodcasts via MediaStore, in a background thread."""
+        try:
+            if self._is_sharing:
+                safe_snackbar("Already preparing to share...")
+                return
+            filepath = self._get_filepath(filename)
+            if not filepath:
+                safe_snackbar("File not found")
+                return
+
+            self._is_sharing = True
+            self.status_text = "Preparing to share..."
+
+            thread = threading.Thread(
+                target=self._share_thread,
+                args=(filepath, filename),
+                daemon=True,
+            )
+            thread.start()
+        except Exception as e:
+            self._is_sharing = False
+            log_crash(type(e), e, e.__traceback__)
+            safe_snackbar("Could not share file")
+
+    def _share_thread(self, filepath, filename):
+        """Background thread for MediaStore copy + share intent."""
         try:
             from jnius import autoclass, cast
 
@@ -419,55 +435,71 @@ class YouTubePodcastApp(MDApp):
             activity = PythonActivity.mActivity
             resolver = activity.getContentResolver()
 
-            # Delete any previous MediaStore entry with same name to avoid duplicates
+            # Delete any previous MediaStore entry with same name
             try:
                 resolver.delete(
                     MediaStore.EXTERNAL_CONTENT_URI,
-                    String("_display_name=? AND relative_path=?"),
-                    [filename, "Music/YouTubePodcasts/"],
+                    String("_display_name=?"),
+                    [String(filename)],
                 )
             except Exception:
                 pass
 
-            # Insert into MediaStore (makes file visible to all apps)
+            # Insert into MediaStore
             values = ContentValues()
             values.put(String("_display_name"), String(filename))
             values.put(String("mime_type"), String("audio/mp4"))
             values.put(String("relative_path"), String("Music/YouTubePodcasts/"))
 
             uri = resolver.insert(MediaStore.EXTERNAL_CONTENT_URI, values)
-            if uri:
-                # Write file data to the MediaStore URI
-                out_stream = resolver.openOutputStream(uri)
-                # Write in chunks to avoid doubling memory usage for large files
-                # Pyjnius converts bytearray -> Java byte[], but NOT bytes
-                with open(filepath, 'rb') as f:
-                    while True:
-                        chunk = f.read(65536)
-                        if not chunk:
-                            break
-                        out_stream.write(bytearray(chunk))
-                out_stream.flush()
-                out_stream.close()
+            if not uri:
+                Clock.schedule_once(lambda dt: self._share_error("Could not create MediaStore entry"))
+                return
 
-                # Now share using the content:// URI (accessible by all apps)
-                intent = Intent()
-                intent.setAction(Intent.ACTION_SEND)
-                intent.setType("audio/*")
-                intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            # Write file data in chunks
+            out_stream = resolver.openOutputStream(uri)
+            if not out_stream:
+                Clock.schedule_once(lambda dt: self._share_error("Could not open output stream"))
+                return
 
-                title = String("Share audio")
-                chooser = Intent.createChooser(intent, cast('java.lang.CharSequence', title))
-                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                activity.startActivity(chooser)
-                self.status_text = "Sharing..."
-            else:
-                safe_snackbar("Could not prepare file for sharing")
+            with open(filepath, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    out_stream.write(bytearray(chunk))
+            out_stream.flush()
+            out_stream.close()
+
+            # Launch share chooser on main thread
+            def do_share(dt):
+                try:
+                    intent = Intent()
+                    intent.setAction(Intent.ACTION_SEND)
+                    intent.setType("audio/*")
+                    intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    title = String("Share audio")
+                    chooser = Intent.createChooser(intent, cast('java.lang.CharSequence', title))
+                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    activity.startActivity(chooser)
+                    self.status_text = "Sharing..."
+                except Exception as e:
+                    log_crash(type(e), e, e.__traceback__)
+                    self.status_text = f"Error sharing: {str(e)[:100]}"
+                finally:
+                    self._is_sharing = False
+
+            Clock.schedule_once(do_share)
+
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
-            self.status_text = f"Error sharing: {str(e)[:100]}"
-            safe_snackbar("Could not share file")
+            Clock.schedule_once(lambda dt, m=str(e)[:100]: self._share_error(m))
+
+    def _share_error(self, msg):
+        self._is_sharing = False
+        self.status_text = f"Error sharing: {msg}"
+        safe_snackbar("Could not share file")
 
     def _read_episodes(self):
         with _episodes_lock:
@@ -479,17 +511,6 @@ class YouTubePodcastApp(MDApp):
                 except Exception:
                     return []
         return []
-
-    def _save_episodes(self, episodes):
-        with _episodes_lock:
-            if EPISODES_FILE:
-                try:
-                    tmp = EPISODES_FILE + ".tmp"
-                    with open(tmp, "w") as f:
-                        json.dump(episodes, f, indent=2)
-                    os.rename(tmp, EPISODES_FILE)
-                except Exception as e:
-                    log_crash(type(e), e, e.__traceback__)
 
     def _save_episode_atomic(self, metadata):
         """Thread-safe read-modify-write for adding one episode."""
@@ -578,7 +599,7 @@ class YouTubePodcastApp(MDApp):
                 pass
 
         ydl_opts = {
-            "format": "bestaudio[ext=m4a]",
+            "format": "bestaudio[ext=m4a]/bestaudio",
             "outtmpl": output_template,
             "quiet": True,
             "no_warnings": True,
@@ -643,7 +664,6 @@ class YouTubePodcastApp(MDApp):
                     "filename": os.path.basename(final_path),
                     "filesize": filesize,
                 }
-                # Atomic read-modify-write (thread-safe)
                 self._save_episode_atomic(metadata)
                 Clock.schedule_once(lambda dt, t=title: self._download_complete(t))
 
