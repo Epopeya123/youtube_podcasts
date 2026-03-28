@@ -371,33 +371,13 @@ class YouTubePodcastApp(MDApp):
         return None
 
     def play_episode(self, filename):
-        """Play audio: try system player first, fall back to in-app MediaPlayer."""
+        """Play audio using Android's native MediaPlayer (in-app)."""
         filepath = self._get_filepath(filename)
         if not filepath:
             safe_snackbar("File not found")
             return
-
-        # Try 1: Open in system audio player (has full controls: seek, pause, etc.)
         try:
-            from jnius import autoclass
-            Intent = autoclass('android.content.Intent')
-            Uri = autoclass('android.net.Uri')
-            File = autoclass('java.io.File')
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-
-            java_file = File(filepath)
-            uri = Uri.fromFile(java_file)
-            intent = Intent(Intent.ACTION_VIEW)
-            intent.setDataAndType(uri, "audio/*")
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            PythonActivity.mActivity.startActivity(intent)
-            self.status_text = f"Playing: {os.path.basename(filepath)[:50]}"
-            return
-        except Exception:
-            pass
-
-        # Try 2: In-app MediaPlayer (no UI controls but works reliably)
-        try:
+            # Stop any currently playing audio
             if hasattr(self, '_player') and self._player:
                 try:
                     self._player.stop()
@@ -413,8 +393,8 @@ class YouTubePodcastApp(MDApp):
             player.prepare()
             player.start()
             self._player = player
-            self.status_text = f"Playing: {os.path.basename(filepath)[:50]}"
-            safe_snackbar("Playing (in-app)")
+            self.status_text = f"Playing: {os.path.basename(filepath)[:40]}"
+            safe_snackbar("Playing audio")
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.status_text = f"Error: {str(e)[:100]}"
@@ -431,15 +411,21 @@ class YouTubePodcastApp(MDApp):
             Intent = autoclass('android.content.Intent')
             Uri = autoclass('android.net.Uri')
             File = autoclass('java.io.File')
+            String = autoclass('java.lang.String')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
             java_file = File(filepath)
             uri = Uri.fromFile(java_file)
-            intent = Intent(Intent.ACTION_SEND)
+
+            intent = Intent()
+            intent.setAction(Intent.ACTION_SEND)
             intent.setType("audio/*")
             intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            chooser = Intent.createChooser(intent, "Share audio")
+
+            # createChooser needs Java String for title
+            title = String("Share audio")
+            chooser = Intent.createChooser(intent, cast('java.lang.CharSequence', title))
             chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             PythonActivity.mActivity.startActivity(chooser)
         except Exception as e:
