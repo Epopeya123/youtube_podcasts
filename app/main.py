@@ -8,7 +8,7 @@ import threading
 import traceback
 from datetime import datetime
 
-# === CRASH LOGGING (runs before ANY imports that could fail) ===
+# === CRASH LOGGING ===
 CRASH_LOG_PATHS = []
 
 def setup_crash_logging():
@@ -61,12 +61,11 @@ except Exception:
     log_crash(*sys.exc_info())
     raise
 
-# Fix stdout/stderr for Android
-import io
+# Fix stdout/stderr for Android (use devnull, not StringIO to avoid memory leak)
 if not hasattr(sys.stdout, 'write') or isinstance(sys.stdout, str):
-    sys.stdout = io.StringIO()
+    sys.stdout = open(os.devnull, 'w')
 if not hasattr(sys.stderr, 'write') or isinstance(sys.stderr, str):
-    sys.stderr = io.StringIO()
+    sys.stderr = open(os.devnull, 'w')
 
 
 class YTDLPLogger:
@@ -75,13 +74,13 @@ class YTDLPLogger:
     def error(self, msg): pass
 
 
-# Disable Android StrictMode file URI check (needed for sharing/opening files)
+# Disable Android StrictMode file URI check (needed for file:// URIs in intents)
 def disable_strict_mode():
     try:
         from jnius import autoclass
         StrictMode = autoclass('android.os.StrictMode')
-        Builder_cls = autoclass('android.os.StrictMode$VmPolicy$Builder')
-        StrictMode.setVmPolicy(Builder_cls().build())
+        VmPolicyBuilder = autoclass('android.os.StrictMode$VmPolicy$Builder')
+        StrictMode.setVmPolicy(VmPolicyBuilder().build())
     except Exception:
         pass
 
@@ -154,7 +153,6 @@ MDScreen:
                 MDTextField:
                     id: url_input
                     hint_text: "Paste YouTube link here"
-                    icon_left: "link-variant"
                     mode: "rectangle"
                     size_hint_x: 1
 
@@ -198,7 +196,7 @@ MDScreen:
                     adaptive_height: True
 
                 MDLabel:
-                    text: "Tap to play  |  Share icon to send"
+                    text: "Tap play icon | Tap share icon to send"
                     theme_text_color: "Hint"
                     adaptive_height: True
                     font_style: "Caption"
@@ -221,6 +219,8 @@ class YouTubePodcastApp(MDApp):
         except Exception as e:
             EPISODES_FILE = None
             log_crash(type(e), e, e.__traceback__)
+            # Surface error instead of silent failure
+            self.status_text = "Error: cannot access data directory"
 
         self.theme_cls.theme_style = "Dark"
         self.theme_cls.primary_palette = "DeepPurple"
@@ -257,7 +257,13 @@ class YouTubePodcastApp(MDApp):
             pass
 
     def on_stop(self):
-        pass  # No in-app player to clean up anymore
+        try:
+            if hasattr(self, '_player') and self._player:
+                self._player.stop()
+                self._player.release()
+                self._player = None
+        except Exception:
+            pass
 
     def request_android_permissions(self):
         try:
@@ -313,7 +319,7 @@ class YouTubePodcastApp(MDApp):
 
     def load_episodes(self):
         try:
-            from kivymd.uix.list import TwoLineAvatarListItem, IconLeftWidget
+            from kivymd.uix.list import TwoLineAvatarIconListItem, IconLeftWidget, IconRightWidget
         except ImportError:
             return
 
@@ -331,17 +337,19 @@ class YouTubePodcastApp(MDApp):
                     date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
                 filename = ep.get("filename", "")
 
-                from kivymd.uix.list import IconRightWidget
+                # Play icon (left) - triggers playback
                 play_icon = IconLeftWidget(icon="play-circle")
                 play_icon.bind(on_release=lambda x, f=filename: self.play_episode(f))
 
+                # Share icon (right) - triggers share
                 share_icon = IconRightWidget(icon="share-variant")
                 share_icon.bind(on_release=lambda x, f=filename: self.share_episode(f))
 
-                item = TwoLineAvatarListItem(
+                # Use TwoLineAvatarIconListItem for left + right icons
+                # No on_release here to avoid double-firing with icon callbacks
+                item = TwoLineAvatarIconListItem(
                     text=str(ep.get("title", "Unknown")),
                     secondary_text=f"{mins} min  |  {date}",
-                    on_release=lambda x, f=filename: self.play_episode(f),
                 )
 
                 item.add_widget(play_icon)
@@ -351,7 +359,6 @@ class YouTubePodcastApp(MDApp):
                 continue
 
     def _get_filepath(self, filename):
-        """Get full path for an episode file, return None if not found."""
         if not filename:
             return None
         filepath = os.path.join(self.download_dir, filename)
@@ -360,11 +367,13 @@ class YouTubePodcastApp(MDApp):
         return None
 
     def play_episode(self, filename):
-        """Open audio in the system's default audio player."""
+        """Play audio: try system player first, fall back to in-app MediaPlayer."""
         filepath = self._get_filepath(filename)
         if not filepath:
             safe_snackbar("File not found")
             return
+
+        # Try 1: Open in system audio player (has full controls: seek, pause, etc.)
         try:
             from jnius import autoclass
             Intent = autoclass('android.content.Intent')
@@ -378,13 +387,37 @@ class YouTubePodcastApp(MDApp):
             intent.setDataAndType(uri, "audio/*")
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             PythonActivity.mActivity.startActivity(intent)
+            self.status_text = f"Playing: {os.path.basename(filepath)[:50]}"
+            return
+        except Exception:
+            pass
+
+        # Try 2: In-app MediaPlayer (no UI controls but works reliably)
+        try:
+            if hasattr(self, '_player') and self._player:
+                try:
+                    self._player.stop()
+                    self._player.release()
+                except Exception:
+                    pass
+                self._player = None
+
+            from jnius import autoclass
+            MediaPlayer = autoclass('android.media.MediaPlayer')
+            player = MediaPlayer()
+            player.setDataSource(filepath)
+            player.prepare()
+            player.start()
+            self._player = player
+            self.status_text = f"Playing: {os.path.basename(filepath)[:50]}"
+            safe_snackbar("Playing (in-app)")
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.status_text = f"Error: {str(e)[:100]}"
-            safe_snackbar("Could not open audio player")
+            safe_snackbar("Could not play audio")
 
     def share_episode(self, filename):
-        """Share audio file via Android share menu (WhatsApp, etc.)."""
+        """Share audio file via Android share menu."""
         filepath = self._get_filepath(filename)
         if not filepath:
             safe_snackbar("File not found")
@@ -394,14 +427,12 @@ class YouTubePodcastApp(MDApp):
             Intent = autoclass('android.content.Intent')
             Uri = autoclass('android.net.Uri')
             File = autoclass('java.io.File')
-            Parcelable = autoclass('android.os.Parcelable')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
             java_file = File(filepath)
             uri = Uri.fromFile(java_file)
             intent = Intent(Intent.ACTION_SEND)
             intent.setType("audio/*")
-            # Cast Uri to Parcelable for correct putExtra overload
             intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             chooser = Intent.createChooser(intent, "Share audio")
@@ -425,6 +456,27 @@ class YouTubePodcastApp(MDApp):
 
     def _save_episodes(self, episodes):
         with _episodes_lock:
+            if EPISODES_FILE:
+                try:
+                    tmp = EPISODES_FILE + ".tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(episodes, f, indent=2)
+                    os.rename(tmp, EPISODES_FILE)
+                except Exception as e:
+                    log_crash(type(e), e, e.__traceback__)
+
+    def _save_episode_atomic(self, metadata):
+        """Thread-safe read-modify-write for adding one episode."""
+        with _episodes_lock:
+            episodes = []
+            if EPISODES_FILE and os.path.exists(EPISODES_FILE):
+                try:
+                    with open(EPISODES_FILE, "r") as f:
+                        data = json.load(f)
+                        episodes = data if isinstance(data, list) else []
+                except Exception:
+                    episodes = []
+            episodes.insert(0, metadata)
             if EPISODES_FILE:
                 try:
                     tmp = EPISODES_FILE + ".tmp"
@@ -521,7 +573,6 @@ class YouTubePodcastApp(MDApp):
                 title = info.get("title", "Unknown")
                 ext = info.get("ext", "m4a")
 
-                # Find the downloaded file
                 final_path = None
                 for name in [f"{video_id}.{ext}", f"{video_id}.m4a", f"{video_id}.webm", f"{video_id}.opus"]:
                     p = os.path.join(self.download_dir, name)
@@ -542,7 +593,6 @@ class YouTubePodcastApp(MDApp):
                     Clock.schedule_once(lambda dt: self._download_error("File not found after download"))
                     return
 
-                # Rename to readable name
                 try:
                     file_ext = os.path.splitext(final_path)[1]
                     safe_name = f"{self._sanitize_filename(title)}_{video_id}{file_ext}"
@@ -567,9 +617,8 @@ class YouTubePodcastApp(MDApp):
                     "filename": os.path.basename(final_path),
                     "filesize": filesize,
                 }
-                episodes = self._read_episodes()
-                episodes.insert(0, metadata)
-                self._save_episodes(episodes)
+                # Atomic read-modify-write (thread-safe)
+                self._save_episode_atomic(metadata)
                 Clock.schedule_once(lambda dt, t=title: self._download_complete(t))
 
         except Exception as e:
