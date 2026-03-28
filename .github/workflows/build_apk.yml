@@ -23,11 +23,12 @@ jobs:
       - name: Build APK using official Kivy Docker image
         run: |
           cd app
-          yes | docker run -i \
+          docker run \
+            --env BUILDOZER_WARN_ON_ROOT=0 \
             --volume "$(pwd)":/home/user/hostcwd \
             --workdir /home/user/hostcwd \
             kivy/buildozer:latest \
-            buildozer -v android debug 2>&1 | tee build.log
+            bash -c "yes | buildozer -v android debug" 2>&1 | tee build.log
           echo "Build finished with exit code: ${PIPESTATUS[0]}"
 
       - name: Check build output
