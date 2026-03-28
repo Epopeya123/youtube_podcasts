@@ -13,74 +13,28 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Build APK with Buildozer
+        uses: digreatbrian/buildozer-action@v2
         with:
           python-version: '3.11'
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            ccache \
-            git \
-            libffi-dev \
-            libssl-dev \
-            libtool \
-            unzip \
-            zip \
-            zlib1g-dev \
-            autoconf \
-            automake \
-            cmake \
-            lld
-
-      - name: Install Buildozer and Cython
-        run: pip install buildozer cython
-
-      - name: Cache Buildozer
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.buildozer
-            app/.buildozer
-          key: buildozer-v3-${{ hashFiles('app/buildozer.spec') }}
-          restore-keys: |
-            buildozer-v3-
-
-      - name: Build APK
-        working-directory: app
-        run: |
-          set -o pipefail
-          yes | buildozer -v android debug 2>&1 | tee build.log
-          echo "Build exit code: $?"
+          buildozer-cmd: buildozer -v android debug
+          work-dir: app
 
       - name: Check build output
         if: always()
-        working-directory: app
         run: |
-          echo "=== Checking for APK ==="
-          find . -name "*.apk" -type f 2>/dev/null || echo "No APK files found anywhere"
+          echo "=== Searching for APK files ==="
+          find . -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
           echo ""
-          echo "=== Contents of bin/ ==="
-          ls -la bin/ 2>/dev/null || echo "bin/ directory does not exist"
-          echo ""
-          echo "=== Last 50 lines of build log ==="
-          tail -50 build.log 2>/dev/null || echo "No build log"
+          echo "=== Contents of app/bin/ ==="
+          ls -la app/bin/ 2>/dev/null || echo "app/bin/ does not exist"
 
       - name: Upload APK
         if: success()
@@ -95,5 +49,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: app/build.log
+          path: app/.buildozer/logs/
           if-no-files-found: warn
