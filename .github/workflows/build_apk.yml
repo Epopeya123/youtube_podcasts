@@ -61,8 +61,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app/.buildozer
-          key: buildozer-local-v3-${{ hashFiles('app/buildozer.spec') }}
+          key: buildozer-local-v4-${{ hashFiles('app/buildozer.spec') }}
           restore-keys: buildozer-local-v2-
+
+      - name: Download FFmpeg for Android arm64
+        working-directory: app
+        run: |
+          echo "Downloading static FFmpeg 8.0.1 for Android arm64..."
+          curl -L -o ffmpeg-android-arm64.zip \
+            "https://github.com/Tyrrrz/FFmpegBin/releases/download/8.0.1/ffmpeg-android-arm64.zip"
+          echo "e68efb371d9478234adc2c51218c65a0681817d237bf63dfb4fcbd6530d20be2  ffmpeg-android-arm64.zip" | sha256sum -c
+          unzip -o ffmpeg-android-arm64.zip -d ffmpeg_bin
+          chmod +x ffmpeg_bin/ffmpeg
+          ls -la ffmpeg_bin/
+          echo "FFmpeg binary ready"
 
       - name: Build APK
         working-directory: app

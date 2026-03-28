@@ -6,12 +6,10 @@ package.name = ytpodcasts
 package.domain = org.epopeya123
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,xml
-version = 1.0.1
+source.include_patterns = ffmpeg_bin/ffmpeg
+version = 1.1.0
 
-# Dependencies - only pure-Python packages that work with p4a
-# No FFmpeg needed - we download m4a directly
-# No brotli/websockets (C extensions, no p4a recipe, optional for yt-dlp)
-# pycryptodome instead of pycryptodomex (has p4a recipe)
+# Dependencies
 requirements = python3,kivy==2.3.1,kivymd==1.2.0,yt-dlp,certifi,urllib3,requests,mutagen,pycryptodome
 
 # Android settings

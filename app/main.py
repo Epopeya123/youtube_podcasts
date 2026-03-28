@@ -1,8 +1,12 @@
-"""YouTube Podcast Downloader - Android App (KivyMD 1.x)"""
+"""YouTube Podcast Downloader - Android App (KivyMD 1.x)
+Version 1.1.0 - MP3 support via bundled FFmpeg
+"""
 
 import json
 import os
 import re
+import shutil
+import stat
 import sys
 import threading
 import traceback
@@ -120,6 +124,35 @@ def get_download_dir():
     return path
 
 
+def setup_ffmpeg():
+    """Copy bundled FFmpeg binary to a writable location and make it executable."""
+    try:
+        # On Android, the app's private files directory is writable
+        data_dir = get_data_dir()
+        ffmpeg_dest = os.path.join(data_dir, "ffmpeg")
+
+        if os.path.exists(ffmpeg_dest) and os.access(ffmpeg_dest, os.X_OK):
+            return ffmpeg_dest
+
+        # Find bundled ffmpeg in the app package
+        # Buildozer copies source files to the private directory
+        possible_sources = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg_bin", "ffmpeg"),
+            os.path.join(data_dir, "app", "ffmpeg_bin", "ffmpeg"),
+            "/data/data/org.epopeya123.ytpodcasts/files/app/ffmpeg_bin/ffmpeg",
+        ]
+
+        for src in possible_sources:
+            if os.path.exists(src):
+                shutil.copy2(src, ffmpeg_dest)
+                os.chmod(ffmpeg_dest, os.stat(ffmpeg_dest).st_mode | stat.S_IEXEC | stat.S_IXUSR | stat.S_IXGRP)
+                return ffmpeg_dest
+
+        return None
+    except Exception:
+        return None
+
+
 def safe_snackbar(text):
     try:
         from kivymd.uix.snackbar import Snackbar
@@ -129,6 +162,7 @@ def safe_snackbar(text):
 
 
 EPISODES_FILE = None
+FFMPEG_PATH = None
 
 KV = '''
 MDScreen:
@@ -195,7 +229,7 @@ MDScreen:
                     adaptive_height: True
 
                 MDLabel:
-                    text: "Tap play icon | Tap share link below episode"
+                    text: "Tap to play/pause | Tap share to send"
                     theme_text_color: "Hint"
                     adaptive_height: True
                     font_style: "Caption"
@@ -208,10 +242,11 @@ MDScreen:
 class YouTubePodcastApp(MDApp):
     status_text = StringProperty("Ready to download")
     is_downloading = BooleanProperty(False)
-    _is_sharing = False  # Prevent multiple simultaneous shares
+    _is_sharing = False
+    _playing_file = None
 
     def build(self):
-        global EPISODES_FILE
+        global EPISODES_FILE, FFMPEG_PATH
         try:
             data_dir = get_data_dir()
             os.makedirs(data_dir, exist_ok=True)
@@ -228,6 +263,9 @@ class YouTubePodcastApp(MDApp):
             self.download_dir = get_download_dir()
         except Exception:
             self.download_dir = "/tmp"
+
+        # Set up FFmpeg
+        FFMPEG_PATH = setup_ffmpeg()
 
         return Builder.load_string(KV)
 
@@ -336,6 +374,7 @@ class YouTubePodcastApp(MDApp):
                     date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
                 filename = ep.get("filename", "")
 
+                # Play icon
                 play_icon = IconLeftWidget(icon="play-circle")
                 play_icon.bind(on_release=lambda x, f=filename: self.play_episode(f))
 
@@ -346,6 +385,7 @@ class YouTubePodcastApp(MDApp):
                 item.add_widget(play_icon)
                 episode_list.add_widget(item)
 
+                # Share row
                 share_item = OneLineListItem(
                     text="      \u21b3 Share this episode",
                     theme_text_color="Custom",
@@ -366,29 +406,34 @@ class YouTubePodcastApp(MDApp):
         return None
 
     def play_episode(self, filename):
-        """Play/stop audio using Android's native MediaPlayer. Tap again to stop."""
+        """Play/pause audio. Tap same episode to pause, tap again to resume."""
         filepath = self._get_filepath(filename)
         if not filepath:
             safe_snackbar("File not found")
             return
         try:
-            # If the SAME file is already playing, stop it (toggle behavior)
-            if hasattr(self, '_playing_file') and self._playing_file == filename:
-                if hasattr(self, '_player') and self._player:
-                    try:
-                        if self._player.isPlaying():
-                            self._player.stop()
-                            self._player.release()
-                            self._player = None
-                            self._playing_file = None
-                            self.status_text = "Stopped"
-                            safe_snackbar("Stopped")
-                            return
-                    except Exception:
-                        pass
-                self._playing_file = None
+            from jnius import autoclass
+            MediaPlayer = autoclass('android.media.MediaPlayer')
+            AudioManager = autoclass('android.media.AudioManager')
 
-            # Stop any previous player (different file)
+            # Same file: toggle pause/resume
+            if self._playing_file == filename and hasattr(self, '_player') and self._player:
+                try:
+                    if self._player.isPlaying():
+                        self._player.pause()
+                        self.status_text = "Paused"
+                        safe_snackbar("Paused")
+                        return
+                    else:
+                        self._player.start()
+                        self.status_text = f"Playing: {os.path.basename(filepath)[:40]}"
+                        safe_snackbar("Resumed")
+                        return
+                except Exception:
+                    # Player in bad state, recreate it below
+                    pass
+
+            # Different file or no player: stop old, start new
             if hasattr(self, '_player') and self._player:
                 try:
                     self._player.stop()
@@ -397,9 +442,6 @@ class YouTubePodcastApp(MDApp):
                     pass
                 self._player = None
 
-            from jnius import autoclass
-            MediaPlayer = autoclass('android.media.MediaPlayer')
-            AudioManager = autoclass('android.media.AudioManager')
             player = MediaPlayer()
             player.setAudioStreamType(AudioManager.STREAM_MUSIC)
             player.setDataSource(filepath)
@@ -408,14 +450,14 @@ class YouTubePodcastApp(MDApp):
             self._player = player
             self._playing_file = filename
             self.status_text = f"Playing: {os.path.basename(filepath)[:40]}"
-            safe_snackbar("Playing (tap again to stop)")
+            safe_snackbar("Playing (tap to pause)")
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.status_text = f"Error: {str(e)[:100]}"
             safe_snackbar("Could not play audio")
 
     def share_episode(self, filename):
-        """Share audio file by copying to Music/YouTubePodcasts via MediaStore, in a background thread."""
+        """Share audio file via MediaStore (background thread)."""
         try:
             if self._is_sharing:
                 safe_snackbar("Already preparing to share...")
@@ -424,10 +466,8 @@ class YouTubePodcastApp(MDApp):
             if not filepath:
                 safe_snackbar("File not found")
                 return
-
             self._is_sharing = True
             self.status_text = "Preparing to share..."
-
             thread = threading.Thread(
                 target=self._share_thread,
                 args=(filepath, filename),
@@ -454,25 +494,20 @@ class YouTubePodcastApp(MDApp):
             activity = PythonActivity.mActivity
             resolver = activity.getContentResolver()
 
-            # API 29+ required for MediaStore relative_path
+            # Detect MIME type from extension
+            ext = os.path.splitext(filename)[1].lower()
+            mime_types = {
+                '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.mp4': 'audio/mp4',
+                '.webm': 'audio/webm', '.opus': 'audio/ogg', '.ogg': 'audio/ogg',
+            }
+            mime_type = mime_types.get(ext, 'audio/mpeg')
+
+            # API 29+ uses MediaStore with relative_path
             if Build_VERSION.SDK_INT < 29:
-                # Fallback for older Android: share via file URI with StrictMode disabled
                 Clock.schedule_once(lambda dt: self._share_via_file_uri(filepath))
                 return
 
-            # Detect MIME type from file extension
-            ext = os.path.splitext(filename)[1].lower()
-            mime_types = {
-                '.m4a': 'audio/mp4',
-                '.mp4': 'audio/mp4',
-                '.mp3': 'audio/mpeg',
-                '.webm': 'audio/webm',
-                '.opus': 'audio/ogg',
-                '.ogg': 'audio/ogg',
-            }
-            mime_type = mime_types.get(ext, 'audio/*')
-
-            # Delete any previous MediaStore entry with same name
+            # Delete previous entry
             try:
                 resolver.delete(
                     MediaStore.EXTERNAL_CONTENT_URI,
@@ -493,7 +528,6 @@ class YouTubePodcastApp(MDApp):
                 Clock.schedule_once(lambda dt: self._share_error("Could not create MediaStore entry"))
                 return
 
-            # Write file data in chunks
             out_stream = resolver.openOutputStream(uri)
             if not out_stream:
                 Clock.schedule_once(lambda dt: self._share_error("Could not open output stream"))
@@ -508,12 +542,12 @@ class YouTubePodcastApp(MDApp):
             out_stream.flush()
             out_stream.close()
 
-            # Launch share chooser on main thread
+            # Launch share on main thread
             def do_share(dt):
                 try:
                     intent = Intent()
                     intent.setAction(Intent.ACTION_SEND)
-                    intent.setType("audio/*")
+                    intent.setType(mime_type)
                     intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
                     intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     title = String("Share audio")
@@ -523,7 +557,7 @@ class YouTubePodcastApp(MDApp):
                     self.status_text = "Sharing..."
                 except Exception as e:
                     log_crash(type(e), e, e.__traceback__)
-                    self.status_text = f"Error sharing: {str(e)[:100]}"
+                    self.status_text = f"Error: {str(e)[:100]}"
                 finally:
                     self._is_sharing = False
 
@@ -534,7 +568,7 @@ class YouTubePodcastApp(MDApp):
             Clock.schedule_once(lambda dt, m=str(e)[:100]: self._share_error(m))
 
     def _share_via_file_uri(self, filepath):
-        """Fallback share for Android API < 29 using file:// URI (StrictMode disabled)."""
+        """Fallback share for API < 29."""
         try:
             from jnius import autoclass, cast
             Intent = autoclass('android.content.Intent')
@@ -543,11 +577,10 @@ class YouTubePodcastApp(MDApp):
             String = autoclass('java.lang.String')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
-            java_file = File(filepath)
-            uri = Uri.fromFile(java_file)
+            uri = Uri.fromFile(File(filepath))
             intent = Intent()
             intent.setAction(Intent.ACTION_SEND)
-            intent.setType("audio/*")
+            intent.setType("audio/mpeg")
             intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             title = String("Share audio")
@@ -557,14 +590,14 @@ class YouTubePodcastApp(MDApp):
             self.status_text = "Sharing..."
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
-            self.status_text = f"Error sharing: {str(e)[:100]}"
+            self.status_text = f"Error: {str(e)[:100]}"
             safe_snackbar("Could not share file")
         finally:
             self._is_sharing = False
 
     def _share_error(self, msg):
         self._is_sharing = False
-        self.status_text = f"Error sharing: {msg}"
+        self.status_text = f"Error: {msg}"
         safe_snackbar("Could not share file")
 
     def _read_episodes(self):
@@ -660,10 +693,11 @@ class YouTubePodcastApp(MDApp):
                         pct = downloaded / total * 100
                         Clock.schedule_once(lambda dt, p=pct: self._update_progress(p, "Downloading..."))
                 elif d["status"] == "finished":
-                    Clock.schedule_once(lambda dt: self._update_progress(95, "Finishing up..."))
+                    Clock.schedule_once(lambda dt: self._update_progress(90, "Converting to MP3..."))
             except Exception:
                 pass
 
+        # Build yt-dlp options: download best audio and convert to MP3
         ydl_opts = {
             "format": "bestaudio[ext=m4a]/bestaudio",
             "outtmpl": output_template,
@@ -672,6 +706,15 @@ class YouTubePodcastApp(MDApp):
             "progress_hooks": [progress_hook],
             "logger": YTDLPLogger(),
         }
+
+        # If FFmpeg is available, convert to MP3
+        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+            ydl_opts["ffmpeg_location"] = os.path.dirname(FFMPEG_PATH)
+            ydl_opts["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "128",
+            }]
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -684,11 +727,11 @@ class YouTubePodcastApp(MDApp):
                     return
 
                 title = info.get("title", "Unknown")
-                ext = info.get("ext", "m4a")
 
+                # Find the downloaded file (could be .mp3 if converted, or .m4a/.webm/.opus if not)
                 final_path = None
-                for name in [f"{video_id}.{ext}", f"{video_id}.m4a", f"{video_id}.webm", f"{video_id}.opus"]:
-                    p = os.path.join(self.download_dir, name)
+                for ext in ['mp3', 'm4a', 'webm', 'opus', 'ogg']:
+                    p = os.path.join(self.download_dir, f"{video_id}.{ext}")
                     if os.path.exists(p):
                         final_path = p
                         break
@@ -706,6 +749,7 @@ class YouTubePodcastApp(MDApp):
                     Clock.schedule_once(lambda dt: self._download_error("File not found after download"))
                     return
 
+                # Rename to readable name
                 try:
                     file_ext = os.path.splitext(final_path)[1]
                     safe_name = f"{self._sanitize_filename(title)}_{video_id}{file_ext}"
