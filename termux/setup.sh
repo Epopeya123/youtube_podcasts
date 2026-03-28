@@ -58,6 +58,12 @@ echo "--- $(date) ---" >> "$HOME/podcast_download.log"
 SCRIPT
 chmod +x "$HOME/run_podcast_download.sh"
 
+# Set up URL opener (Share > Termux to download)
+echo "[Setting up Share-to-Download...]"
+mkdir -p "$HOME/bin"
+cp "$INSTALL_DIR/termux/termux-url-opener" "$HOME/bin/termux-url-opener"
+chmod +x "$HOME/bin/termux-url-opener"
+
 # Set up cron job (every 6 hours)
 echo "[Setting up automatic schedule...]"
 sv-enable crond 2>/dev/null || true

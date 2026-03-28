@@ -1,0 +1,30 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Termux URL opener - downloads YouTube audio when you share a link to Termux
+# Place this file at ~/bin/termux-url-opener
+
+URL="$1"
+PODCAST_DIR="$HOME/storage/shared/Podcasts/AI_News_NateBJones"
+
+cd "$HOME/youtube_podcasts"
+
+echo "================================================"
+echo "  YouTube Audio Downloader"
+echo "================================================"
+echo ""
+echo "URL: $URL"
+echo "Saving to: Podcasts/AI_News_NateBJones"
+echo ""
+
+python download_audio.py --url "$URL" --output-dir "$PODCAST_DIR"
+
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "✓ Download complete! Check your Podcasts folder."
+else
+    echo ""
+    echo "✗ Download failed. Check the URL and try again."
+fi
+
+echo ""
+echo "Press Enter to close..."
+read
