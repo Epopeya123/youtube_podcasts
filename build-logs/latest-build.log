@@ -210,7 +210,7 @@ options:
 [1m[90m[DEBUG][39m[0m:   Create directory src/main/assets
 Compiling '/home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/app/main.py'...
 Compiling '/home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/app/sitecustomize.py'...
-[1m[90m[DEBUG][39m[0m:   Remove directory and subdirectory /tmp/p4a-extra-env-fj1hquqj
+[1m[90m[DEBUG][39m[0m:   Remove directory and subdirectory /tmp/p4a-extra-env-4mc85m85
 [1m[90m[DEBUG][39m[0m:   Remove directory and subdirectory src/main/res
 [1m[INFO][0m:    Detected highest available build tools version to be 37.0.0
 stty: 'standard input': Inappropriate ioctl for device
@@ -255,12 +255,14 @@ stty: 'standard input': Inappropriate ioctl for device
 [1m[90m[DEBUG][39m[0m:   	> Task :compileDebugShaders NO-SOURCE
 [1m[90m[DEBUG][39m[0m:   	> Task :generateDebugAssets UP-TO-DATE
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugAssets
+[1m[90m[DEBUG][39m[0m:   	> Task :processDebugManifestForPackage
 [1m[90m[DEBUG][39m[0m:   	> Task :processDebugJavaRes NO-SOURCE
 [1m[90m[DEBUG][39m[0m:   	> Task :compressDebugAssets
-[1m[90m[DEBUG][39m[0m:   	> Task :processDebugManifestForPackage
-[1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugJavaResource
 [1m[90m[DEBUG][39m[0m:   	> Task :desugarDebugFileDependencies
 [1m[90m[DEBUG][39m[0m:   	> Task :checkDebugDuplicateClasses
+[1m[90m[DEBUG][39m[0m:   	> Task :mergeLibDexDebug
+[1m[90m[DEBUG][39m[0m:   	> Task :mergeExtDexDebug
+[1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugJavaResource
 [1m[90m[DEBUG][39m[0m:   	> Task :processDebugResources
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugJniLibFolders
 [1m[90m[DEBUG][39m[0m:   	
@@ -268,8 +270,6 @@ stty: 'standard input': Inappropriate ioctl for device
 [1m[90m[DEBUG][39m[0m:   	Note: Some input files use or override a deprecated API.
 [1m[90m[DEBUG][39m[0m:   	Note: Recompile with -Xlint:deprecation for details.
 [1m[90m[DEBUG][39m[0m:   	
-[1m[90m[DEBUG][39m[0m:   	> Task :mergeExtDexDebug
-[1m[90m[DEBUG][39m[0m:   	> Task :mergeLibDexDebug
 [1m[90m[DEBUG][39m[0m:   	> Task :dexBuilderDebug
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeProjectDexDebug
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugNativeLibs
@@ -287,7 +287,7 @@ stty: 'standard input': Inappropriate ioctl for device
 [1m[90m[DEBUG][39m[0m:   	
 [1m[90m[DEBUG][39m[0m:   	See https://docs.gradle.org/8.0.2/userguide/command_line_interface.html#sec:command_line_warnings
 [1m[90m[DEBUG][39m[0m:   	
-[1m[90m[DEBUG][39m[0m:   	BUILD SUCCESSFUL in 42s
+[1m[90m[DEBUG][39m[0m:   	BUILD SUCCESSFUL in 40s
 [1m[90m[DEBUG][39m[0m:   	33 actionable tasks: 33 executed
 [1m[INFO][0m:    [36m<- directory context /home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/platform/python-for-android[39m
 [1m[90m[DEBUG][39m[0m:   All possible dists: [<Distribution: name ytpodcasts with recipes (hostpython3, libffi, openssl, sdl2_image, sdl2_mixer, sdl2_ttf, sqlite3, python3, sdl2, setuptools, pycparser, six, cffi, pyjnius, android, kivy, pycryptodome, mutagen, certifi, yt-dlp, idna, chardet, materialyoucolor, kivymd, requests, urllib3)>]
