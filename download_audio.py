@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -13,9 +14,6 @@ import yt_dlp
 CHANNEL_URL = "https://www.youtube.com/@natebjones/videos"
 EPISODES_FILE = "episodes.json"
 AUDIO_DIR = "audio"
-
-# YouTube's public RSS feed for the channel (most reliable from CI/CD)
-# This gets auto-discovered on first run
 YOUTUBE_RSS_CACHE = ".channel_id"
 
 
@@ -71,7 +69,7 @@ def discover_channel_id():
 def fetch_videos_from_rss(channel_id):
     """Fetch recent videos from YouTube's public RSS feed (works from any IP)."""
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    print(f"Fetching videos from YouTube RSS feed...")
+    print("Fetching videos from YouTube RSS feed...")
     try:
         req = urllib.request.Request(rss_url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=30) as response:
@@ -119,26 +117,30 @@ def fetch_videos_from_ytdlp(max_episodes):
 
 def fetch_video_list(max_episodes):
     """Fetch list of recent videos, trying RSS first then yt-dlp."""
-    # Try YouTube RSS feed first (most reliable from CI/CD environments)
     channel_id = discover_channel_id()
     if channel_id:
         videos = fetch_videos_from_rss(channel_id)
         if videos:
             return videos
 
-    # Fallback to yt-dlp
     return fetch_videos_from_ytdlp(max_episodes)
 
 
-def download_audio(video_id):
-    """Download audio for a single video. Returns metadata dict or None on failure."""
-    os.makedirs(AUDIO_DIR, exist_ok=True)
+def sanitize_filename(title):
+    """Create a safe filename from a video title."""
+    safe = "".join(c if c.isalnum() or c in " -_" else "" for c in title)
+    return safe.strip()[:80] or "episode"
 
-    output_template = os.path.join(AUDIO_DIR, "%(id)s.%(ext)s")
+
+def download_audio(video_id, output_dir):
+    """Download audio for a single video. Returns metadata dict or None on failure."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    output_template = os.path.join(output_dir, "%(id)s.%(ext)s")
 
     def progress_hook(d):
         if d["status"] == "finished":
-            print(f"  Download complete, converting...")
+            print("  Download complete, converting...")
 
     ydl_opts = {
         "format": "bestaudio/best",
@@ -164,16 +166,23 @@ def download_audio(video_id):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info:
-                mp3_path = os.path.join(AUDIO_DIR, f"{video_id}.mp3")
+                mp3_path = os.path.join(output_dir, f"{video_id}.mp3")
                 filesize = os.path.getsize(mp3_path) if os.path.exists(mp3_path) else 0
+                title = info.get("title", "Unknown Title")
+
+                # Rename file to a readable name
+                safe_name = f"{sanitize_filename(title)}.mp3"
+                readable_path = os.path.join(output_dir, safe_name)
+                if os.path.exists(mp3_path) and not os.path.exists(readable_path):
+                    shutil.move(mp3_path, readable_path)
 
                 metadata = {
                     "id": video_id,
-                    "title": info.get("title", "Unknown Title"),
+                    "title": title,
                     "description": info.get("description", ""),
                     "upload_date": info.get("upload_date", ""),
                     "duration": info.get("duration", 0),
-                    "filename": f"{video_id}.mp3",
+                    "filename": safe_name,
                     "filesize": filesize,
                     "published": False,
                 }
@@ -191,6 +200,12 @@ def main():
         default=5,
         help="Maximum number of new episodes to download (default: 5)",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=AUDIO_DIR,
+        help="Directory to save MP3 files (default: audio/)",
+    )
     args = parser.parse_args()
 
     print(f"Loading existing episodes from {EPISODES_FILE}...")
@@ -203,7 +218,7 @@ def main():
 
     if not videos:
         print("WARNING: Could not fetch any videos. YouTube may be blocking this IP.")
-        print("Try running locally or check the workflow logs for details.")
+        print("Try running locally or check the logs for details.")
         return
 
     # Filter out already-downloaded videos
@@ -221,7 +236,7 @@ def main():
         title = video.get("title", video_id)
         print(f"\n[{i}/{len(new_videos)}] Downloading: {title}")
 
-        metadata = download_audio(video_id)
+        metadata = download_audio(video_id, args.output_dir)
         if metadata:
             episodes.append(metadata)
             downloaded += 1

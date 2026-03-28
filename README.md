@@ -1,49 +1,66 @@
 # YouTube Podcasts
 
-Automatically downloads audio from [Nate B. Jones' YouTube channel](https://www.youtube.com/@natebjones) (AI News & Strategy Daily) and serves it as a podcast RSS feed.
+Automatically downloads audio from [Nate B. Jones' YouTube channel](https://www.youtube.com/@natebjones) (AI News & Strategy Daily) and saves it as MP3 files you can listen to like a podcast.
 
-## How it works
+## Option 1: Termux (Android phone) — Recommended
 
-1. A GitHub Actions workflow runs every 6 hours
-2. It checks for new YouTube videos and downloads the audio as MP3 (64kbps mono)
-3. Audio files are uploaded to GitHub Releases (stable download URLs)
-4. An RSS podcast feed is generated and deployed to GitHub Pages
+Run everything on your phone. Downloads happen automatically every 6 hours using your phone's internet (not blocked by YouTube).
 
-## Subscribe
+### Setup (one-time)
 
-Add this RSS feed URL to your podcast app (iVoox, Pocket Casts, AntennaPod, Overcast, etc.):
+1. Install **[F-Droid](https://f-droid.org/)** (open-source app store)
+2. Install **Termux** from F-Droid
+3. Open Termux and paste these commands:
 
+```bash
+pkg install -y git
+git clone https://github.com/Epopeya123/youtube_podcasts.git ~/youtube_podcasts
+cd ~/youtube_podcasts/termux
+bash setup.sh
 ```
-https://epopeya123.github.io/youtube_podcasts/feed.xml
+
+4. When prompted, **allow storage access**
+5. To download episodes right now:
+
+```bash
+~/run_podcast_download.sh
 ```
 
-### iVoox
+### Where are my episodes?
 
-1. Open iVoox app
-2. Go to **Suscripciones** (Subscriptions)
-3. Tap the **+** icon
-4. Paste the feed URL above in the "Nombre o URL" field
+MP3 files are saved to your phone's storage at:
+```
+Internal Storage > Podcasts > AI_News_NateBJones
+```
 
-## Setup (if you fork this repo)
+Play them with any music app, or use **AntennaPod** (free, from F-Droid) to monitor the folder like a podcast feed.
 
-1. Enable **GitHub Pages** in your repo settings (source: `gh-pages` branch)
-2. Enable **GitHub Actions** (it should be enabled by default)
-3. Optionally trigger the first run manually: Actions > Update Podcast Feed > Run workflow
-4. Update the `GITHUB_REPO` and `GITHUB_PAGES_URL` constants in `generate_feed.py`
+### Updating yt-dlp
 
-## Manual trigger
+If downloads stop working, update yt-dlp in Termux:
+```bash
+pip install --upgrade yt-dlp
+```
 
-You can manually trigger a download from the Actions tab, optionally specifying how many episodes to download (default: 5).
+## Option 2: GitHub Actions (cloud)
 
-## Local usage
+> Note: YouTube blocks downloads from GitHub's servers. This option works only if YouTube unblocks datacenter IPs or you set up a self-hosted runner.
+
+1. Fork this repo
+2. Enable **GitHub Pages** (source: `gh-pages` branch)
+3. Enable **GitHub Actions**
+4. Trigger the first run: Actions > Update Podcast Feed > Run workflow
+5. Subscribe to `https://YOUR_USERNAME.github.io/youtube_podcasts/feed.xml`
+
+## Option 3: Local (computer)
 
 ```bash
 pip install -r requirements.txt
 # Also need ffmpeg installed
 
-# Download latest 5 episodes
-python download_audio.py --max-episodes 5
+# Download latest 5 episodes to a custom folder
+python download_audio.py --max-episodes 5 --output-dir ~/Music/NateBJones
 
-# Generate RSS feed
+# Generate RSS feed (for GitHub Actions mode)
 python generate_feed.py
 ```
