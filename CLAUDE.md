@@ -4,8 +4,8 @@
 YouTube Podcasts — download audio from YouTube videos and listen as podcasts.
 
 Two tools in one repo:
-1. **Termux CLI tool** (`download_audio.py`, `termux/`) — runs on Android phone via Termux, downloads audio via yt-dlp, scheduled every 6 hours
-2. **Android app** (`app/`) — KivyMD 1.2.0 app built with Buildozer via GitHub Actions, downloads/plays/shares YouTube audio as MP3
+1. **Termux CLI tool** (`download_audio.py`, `termux/`) — runs on Android phone via Termux, downloads audio via yt-dlp + ffmpeg, scheduled every 6 hours
+2. **Android app** (`app/`) — KivyMD 1.2.0 app built with Buildozer via GitHub Actions. The app is a UI control panel that launches Termux for all downloads (MP3 conversion requires Termux's ffmpeg). Supports multi-channel management with per-channel refresh.
 
 ## Critical rules (learned the hard way)
 - **KivyMD version**: Must use **1.2.0** (not 2.x). Widget names are completely different between versions. TwoLineAvatarIconListItem does NOT work in this build — use TwoLineAvatarListItem.

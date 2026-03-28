@@ -6,11 +6,10 @@ package.name = ytpodcasts
 package.domain = org.epopeya123
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,xml
-source.include_patterns = ffmpeg_bin/*
-version = 1.1.0
+version = 2.0.0
 
-# Dependencies
-requirements = python3,kivy==2.3.1,kivymd==1.2.0,yt-dlp,certifi,urllib3,requests,mutagen,pycryptodome
+# Dependencies (lightweight - Termux handles downloading)
+requirements = python3,kivy==2.3.1,kivymd==1.2.0,certifi,pyjnius
 
 # Android settings
 android.permissions = INTERNET,READ_MEDIA_AUDIO
@@ -29,11 +28,7 @@ android.manifest.intent_filters = intent_filters.xml
 
 fullscreen = 0
 android.presplash_color = #1a1a2e
-
-# Orientation
 orientation = portrait
-
-# Logging
 log_level = 2
 
 [buildozer]

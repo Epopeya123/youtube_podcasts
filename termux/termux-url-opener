@@ -1,30 +1,60 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Termux URL opener - downloads YouTube audio when you share a link to Termux
-# Place this file at ~/bin/termux-url-opener
+# Termux URL opener - handles both video URLs and channel refresh commands
+# Place at ~/bin/termux-url-opener
 
-URL="$1"
-PODCAST_DIR="$HOME/storage/shared/Podcasts/AI_News_NateBJones"
-
-cd "$HOME/youtube_podcasts"
+INPUT="$1"
+BASE_DIR="$HOME/storage/shared/Podcasts"
+SCRIPT_DIR="$HOME/youtube_podcasts"
 
 echo "================================================"
 echo "  YouTube Audio Downloader"
 echo "================================================"
 echo ""
-echo "URL: $URL"
-echo "Saving to: Podcasts/AI_News_NateBJones"
-echo ""
 
-python download_audio.py --url "$URL" --output-dir "$PODCAST_DIR"
+cd "$SCRIPT_DIR" 2>/dev/null || cd "$HOME"
 
-if [ $? -eq 0 ]; then
+# Check if this is a channel refresh command (format: "REFRESH:channel_url:folder_name")
+if echo "$INPUT" | grep -q "^REFRESH:"; then
+    CHANNEL_URL=$(echo "$INPUT" | cut -d':' -f2-)
+    FOLDER_NAME=$(echo "$CHANNEL_URL" | sed 's|.*/@@*||' | sed 's|[^a-zA-Z0-9_-]|_|g')
+    OUTPUT_DIR="$BASE_DIR/$FOLDER_NAME"
+    mkdir -p "$OUTPUT_DIR"
+
+    echo "Refreshing channel: $CHANNEL_URL"
+    echo "Saving to: $OUTPUT_DIR"
     echo ""
-    echo "✓ Download complete! Check your Podcasts folder."
+
+    python download_audio.py --max-episodes 3 --output-dir "$OUTPUT_DIR" 2>&1
 else
+    # Regular video URL
+    URL="$INPUT"
+
+    # Check if a folder name is appended (format: "URL|||folder_name")
+    if echo "$INPUT" | grep -q "|||"; then
+        URL=$(echo "$INPUT" | cut -d'|' -f1-3 | sed 's/|||$//')
+        URL=$(echo "$INPUT" | sed 's/|||.*//')
+        FOLDER_NAME=$(echo "$INPUT" | sed 's/.*|||//')
+    else
+        FOLDER_NAME="General"
+    fi
+
+    OUTPUT_DIR="$BASE_DIR/$FOLDER_NAME"
+    mkdir -p "$OUTPUT_DIR"
+
+    echo "URL: $URL"
+    echo "Saving to: $OUTPUT_DIR"
     echo ""
-    echo "✗ Download failed. Check the URL and try again."
+
+    python download_audio.py --url "$URL" --output-dir "$OUTPUT_DIR" 2>&1
 fi
 
+STATUS=$?
+echo ""
+if [ $STATUS -eq 0 ]; then
+    echo "Done! Check your Podcasts folder."
+else
+    echo "Something went wrong. Check the error above."
+fi
 echo ""
 echo "Press Enter to close..."
 read
