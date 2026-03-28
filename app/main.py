@@ -338,7 +338,7 @@ class YouTubePodcastApp(MDApp):
                 continue
 
     def play_episode(self, filename):
-        """Play audio file using Kivy's built-in audio player."""
+        """Play audio file using Android's native MediaPlayer."""
         if not filename:
             safe_snackbar("No file to play")
             return
@@ -347,44 +347,28 @@ class YouTubePodcastApp(MDApp):
             safe_snackbar("File not found")
             return
         try:
-            from kivy.core.audio import SoundLoader
             # Stop any currently playing audio
-            if hasattr(self, '_current_sound') and self._current_sound:
+            if hasattr(self, '_player') and self._player:
                 try:
-                    self._current_sound.stop()
+                    self._player.stop()
+                    self._player.release()
                 except Exception:
                     pass
+                self._player = None
 
-            sound = SoundLoader.load(filepath)
-            if sound:
-                sound.play()
-                self._current_sound = sound
-                self.status_text = f"Playing: {filename[:50]}"
-                safe_snackbar("Playing audio")
-            else:
-                # Fallback: try opening with system player via intent
-                self._open_with_system_player(filepath)
-        except Exception as e:
-            log_crash(type(e), e, e.__traceback__)
-            self._open_with_system_player(filepath)
-
-    def _open_with_system_player(self, filepath):
-        """Fallback: open with Android's default audio player."""
-        try:
+            # Use Android's native MediaPlayer
             from jnius import autoclass
-            Intent = autoclass('android.content.Intent')
-            Uri = autoclass('android.net.Uri')
-            File = autoclass('java.io.File')
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-
-            java_file = File(filepath)
-            uri = Uri.fromFile(java_file)
-            intent = Intent(Intent.ACTION_VIEW)
-            intent.setDataAndType(uri, "audio/*")
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            PythonActivity.mActivity.startActivity(intent)
+            MediaPlayer = autoclass('android.media.MediaPlayer')
+            player = MediaPlayer()
+            player.setDataSource(filepath)
+            player.prepare()
+            player.start()
+            self._player = player
+            self.status_text = f"Playing: {filename[:50]}"
+            safe_snackbar("Playing audio")
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
+            self.status_text = f"Error playing: {str(e)[:100]}"
             safe_snackbar("Could not play audio")
 
     def _read_episodes(self):
