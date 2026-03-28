@@ -23,7 +23,7 @@ jobs:
       - name: Build APK using official Kivy Docker image
         run: |
           cd app
-          docker run \
+          yes | docker run -i \
             --volume "$(pwd)":/home/user/hostcwd \
             --workdir /home/user/hostcwd \
             kivy/buildozer:latest \
