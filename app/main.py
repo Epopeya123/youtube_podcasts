@@ -325,8 +325,9 @@ class YouTubePodcastApp(MDApp):
                 date = ep.get("upload_date", "")
                 if len(date) == 8:
                     date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
-                icon = IconLeftWidget(icon="play-circle")
                 filename = ep.get("filename", "")
+                icon = IconLeftWidget(icon="play-circle")
+                icon.bind(on_release=lambda x, f=filename: self.play_episode(f))
                 item = TwoLineAvatarListItem(
                     text=str(ep.get("title", "Unknown")),
                     secondary_text=f"{mins} min  |  {date}",
