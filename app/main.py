@@ -249,6 +249,16 @@ class YouTubePodcastApp(MDApp):
     def on_pause(self):
         return True
 
+    def on_stop(self):
+        """Clean up MediaPlayer when app exits."""
+        try:
+            if hasattr(self, '_player') and self._player:
+                self._player.stop()
+                self._player.release()
+                self._player = None
+        except Exception:
+            pass
+
     def on_resume(self):
         try:
             self.load_episodes()
