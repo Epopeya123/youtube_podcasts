@@ -57,14 +57,29 @@ jobs:
           path: |
             ~/.buildozer
             app/.buildozer
-          key: buildozer-v2-${{ hashFiles('app/buildozer.spec') }}
+          key: buildozer-v3-${{ hashFiles('app/buildozer.spec') }}
           restore-keys: |
-            buildozer-v2-
+            buildozer-v3-
 
       - name: Build APK
         working-directory: app
         run: |
+          set -o pipefail
           yes | buildozer -v android debug 2>&1 | tee build.log
+          echo "Build exit code: $?"
+
+      - name: Check build output
+        if: always()
+        working-directory: app
+        run: |
+          echo "=== Checking for APK ==="
+          find . -name "*.apk" -type f 2>/dev/null || echo "No APK files found anywhere"
+          echo ""
+          echo "=== Contents of bin/ ==="
+          ls -la bin/ 2>/dev/null || echo "bin/ directory does not exist"
+          echo ""
+          echo "=== Last 50 lines of build log ==="
+          tail -50 build.log 2>/dev/null || echo "No build log"
 
       - name: Upload APK
         if: success()
@@ -72,10 +87,12 @@ jobs:
         with:
           name: youtube-podcasts-apk
           path: app/bin/*.apk
+          if-no-files-found: warn
 
-      - name: Upload build log on failure
-        if: failure()
+      - name: Upload build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: app/build.log
+          if-no-files-found: warn
