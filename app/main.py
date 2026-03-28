@@ -409,11 +409,9 @@ class YouTubePodcastApp(MDApp):
             return
         try:
             from jnius import autoclass, cast
-            import shutil
 
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             Intent = autoclass('android.content.Intent')
-            Uri = autoclass('android.net.Uri')
             ContentValues = autoclass('android.content.ContentValues')
             MediaStore = autoclass('android.provider.MediaStore$Audio$Media')
             String = autoclass('java.lang.String')
@@ -421,19 +419,35 @@ class YouTubePodcastApp(MDApp):
             activity = PythonActivity.mActivity
             resolver = activity.getContentResolver()
 
+            # Delete any previous MediaStore entry with same name to avoid duplicates
+            try:
+                resolver.delete(
+                    MediaStore.EXTERNAL_CONTENT_URI,
+                    String("_display_name=? AND relative_path=?"),
+                    [filename, "Music/YouTubePodcasts/"],
+                )
+            except Exception:
+                pass
+
             # Insert into MediaStore (makes file visible to all apps)
             values = ContentValues()
             values.put(String("_display_name"), String(filename))
             values.put(String("mime_type"), String("audio/mp4"))
-            values.put(String("relative_path"), String("Music/YouTubePodcasts"))
+            values.put(String("relative_path"), String("Music/YouTubePodcasts/"))
 
             uri = resolver.insert(MediaStore.EXTERNAL_CONTENT_URI, values)
             if uri:
                 # Write file data to the MediaStore URI
                 out_stream = resolver.openOutputStream(uri)
+                # Write in chunks to avoid doubling memory usage for large files
+                # Pyjnius converts bytearray -> Java byte[], but NOT bytes
                 with open(filepath, 'rb') as f:
-                    data = f.read()
-                out_stream.write(data)
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        out_stream.write(bytearray(chunk))
+                out_stream.flush()
                 out_stream.close()
 
                 # Now share using the content:// URI (accessible by all apps)
