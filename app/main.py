@@ -129,9 +129,11 @@ def setup_ffmpeg():
     try:
         data_dir = get_data_dir()
         ffmpeg_dest = os.path.join(data_dir, "ffmpeg")
+        ffprobe_dest = os.path.join(data_dir, "ffprobe")
 
-        # Already set up from a previous run?
-        if os.path.exists(ffmpeg_dest) and os.access(ffmpeg_dest, os.X_OK):
+        # Already set up from a previous run? (need BOTH ffmpeg and ffprobe)
+        if os.path.exists(ffmpeg_dest) and os.access(ffmpeg_dest, os.X_OK) \
+                and os.path.exists(ffprobe_dest) and os.access(ffprobe_dest, os.X_OK):
             return ffmpeg_dest
 
         # Search for the bundled binary
