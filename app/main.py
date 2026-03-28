@@ -12,18 +12,13 @@ from datetime import datetime
 CRASH_LOG_PATHS = []
 
 def setup_crash_logging():
-    """Set up crash log in multiple locations for maximum findability."""
     global CRASH_LOG_PATHS
     dirs_to_try = []
-
-    # 1. App-private dir (always writable, no permissions)
     try:
         from android.storage import app_storage_path
         dirs_to_try.append(app_storage_path())
     except ImportError:
         pass
-
-    # 2. External app dir (visible in file managers)
     try:
         from jnius import autoclass
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
@@ -33,15 +28,11 @@ def setup_crash_logging():
             dirs_to_try.append(ext_dir.getAbsolutePath())
     except Exception:
         pass
-
-    # 3. Home dir (desktop fallback)
     dirs_to_try.append(os.path.expanduser("~"))
-
     for d in dirs_to_try:
         try:
             os.makedirs(d, exist_ok=True)
-            path = os.path.join(d, "crash_log.txt")
-            CRASH_LOG_PATHS.append(path)
+            CRASH_LOG_PATHS.append(os.path.join(d, "crash_log.txt"))
         except Exception:
             pass
 
@@ -50,10 +41,7 @@ def log_crash(exc_type, exc_value, exc_tb):
     for path in CRASH_LOG_PATHS:
         try:
             with open(path, "a") as f:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"CRASH at {datetime.now()}\n")
-                f.write(error_text)
-                f.write(f"\n{'='*60}\n")
+                f.write(f"\n{'='*60}\nCRASH at {datetime.now()}\n{error_text}\n{'='*60}\n")
         except Exception:
             pass
     sys.__excepthook__(exc_type, exc_value, exc_tb)
@@ -61,7 +49,7 @@ def log_crash(exc_type, exc_value, exc_tb):
 setup_crash_logging()
 sys.excepthook = log_crash
 
-# === Now safe to import Kivy/KivyMD ===
+# === Import Kivy/KivyMD ===
 try:
     from kivy.clock import Clock
     from kivy.lang import Builder
@@ -73,7 +61,7 @@ except Exception:
     log_crash(*sys.exc_info())
     raise
 
-# Fix stdout/stderr for Android (Kivy replaces them with non-file objects)
+# Fix stdout/stderr for Android
 import io
 if not hasattr(sys.stdout, 'write') or isinstance(sys.stdout, str):
     sys.stdout = io.StringIO()
@@ -82,12 +70,23 @@ if not hasattr(sys.stderr, 'write') or isinstance(sys.stderr, str):
 
 
 class YTDLPLogger:
-    """Silent logger for yt-dlp to avoid stdout/stderr issues on Android."""
     def debug(self, msg): pass
     def warning(self, msg): pass
     def error(self, msg): pass
 
-# Thread lock for episodes.json
+
+# Disable Android StrictMode file URI check (needed for sharing/opening files)
+def disable_strict_mode():
+    try:
+        from jnius import autoclass
+        StrictMode = autoclass('android.os.StrictMode')
+        Builder_cls = autoclass('android.os.StrictMode$VmPolicy$Builder')
+        StrictMode.setVmPolicy(Builder_cls().build())
+    except Exception:
+        pass
+
+disable_strict_mode()
+
 _episodes_lock = threading.Lock()
 
 
@@ -100,7 +99,6 @@ def get_data_dir():
 
 
 def get_download_dir():
-    """Get download dir with multiple fallbacks."""
     try:
         from jnius import autoclass
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
@@ -112,7 +110,6 @@ def get_download_dir():
             return path
     except Exception:
         pass
-
     try:
         from android.storage import app_storage_path
         path = os.path.join(app_storage_path(), "Podcasts")
@@ -120,14 +117,12 @@ def get_download_dir():
         return path
     except Exception:
         pass
-
     path = os.path.expanduser("~/Podcasts/AI_News_NateBJones")
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def safe_snackbar(text):
-    """Show a snackbar notification without crashing."""
     try:
         from kivymd.uix.snackbar import Snackbar
         Snackbar(text=str(text)).open()
@@ -202,6 +197,12 @@ MDScreen:
                     font_style: "Subtitle1"
                     adaptive_height: True
 
+                MDLabel:
+                    text: "Tap to play  |  Share icon to send"
+                    theme_text_color: "Hint"
+                    adaptive_height: True
+                    font_style: "Caption"
+
                 MDList:
                     id: episode_list
 '''
@@ -249,21 +250,14 @@ class YouTubePodcastApp(MDApp):
     def on_pause(self):
         return True
 
-    def on_stop(self):
-        """Clean up MediaPlayer when app exits."""
-        try:
-            if hasattr(self, '_player') and self._player:
-                self._player.stop()
-                self._player.release()
-                self._player = None
-        except Exception:
-            pass
-
     def on_resume(self):
         try:
             self.load_episodes()
         except Exception:
             pass
+
+    def on_stop(self):
+        pass  # No in-app player to clean up anymore
 
     def request_android_permissions(self):
         try:
@@ -336,51 +330,87 @@ class YouTubePodcastApp(MDApp):
                 if len(date) == 8:
                     date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
                 filename = ep.get("filename", "")
-                icon = IconLeftWidget(icon="play-circle")
-                icon.bind(on_release=lambda x, f=filename: self.play_episode(f))
+
+                from kivymd.uix.list import IconRightWidget
+                play_icon = IconLeftWidget(icon="play-circle")
+                play_icon.bind(on_release=lambda x, f=filename: self.play_episode(f))
+
+                share_icon = IconRightWidget(icon="share-variant")
+                share_icon.bind(on_release=lambda x, f=filename: self.share_episode(f))
+
                 item = TwoLineAvatarListItem(
                     text=str(ep.get("title", "Unknown")),
                     secondary_text=f"{mins} min  |  {date}",
                     on_release=lambda x, f=filename: self.play_episode(f),
                 )
-                item.add_widget(icon)
+
+                item.add_widget(play_icon)
+                item.add_widget(share_icon)
                 episode_list.add_widget(item)
             except Exception:
                 continue
 
-    def play_episode(self, filename):
-        """Play audio file using Android's native MediaPlayer."""
+    def _get_filepath(self, filename):
+        """Get full path for an episode file, return None if not found."""
         if not filename:
-            safe_snackbar("No file to play")
-            return
+            return None
         filepath = os.path.join(self.download_dir, filename)
-        if not os.path.exists(filepath):
+        if os.path.exists(filepath):
+            return filepath
+        return None
+
+    def play_episode(self, filename):
+        """Open audio in the system's default audio player."""
+        filepath = self._get_filepath(filename)
+        if not filepath:
             safe_snackbar("File not found")
             return
         try:
-            # Stop any currently playing audio
-            if hasattr(self, '_player') and self._player:
-                try:
-                    self._player.stop()
-                    self._player.release()
-                except Exception:
-                    pass
-                self._player = None
-
-            # Use Android's native MediaPlayer
             from jnius import autoclass
-            MediaPlayer = autoclass('android.media.MediaPlayer')
-            player = MediaPlayer()
-            player.setDataSource(filepath)
-            player.prepare()
-            player.start()
-            self._player = player
-            self.status_text = f"Playing: {filename[:50]}"
-            safe_snackbar("Playing audio")
+            Intent = autoclass('android.content.Intent')
+            Uri = autoclass('android.net.Uri')
+            File = autoclass('java.io.File')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
+            java_file = File(filepath)
+            uri = Uri.fromFile(java_file)
+            intent = Intent(Intent.ACTION_VIEW)
+            intent.setDataAndType(uri, "audio/*")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            PythonActivity.mActivity.startActivity(intent)
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
-            self.status_text = f"Error playing: {str(e)[:100]}"
-            safe_snackbar("Could not play audio")
+            self.status_text = f"Error: {str(e)[:100]}"
+            safe_snackbar("Could not open audio player")
+
+    def share_episode(self, filename):
+        """Share audio file via Android share menu (WhatsApp, etc.)."""
+        filepath = self._get_filepath(filename)
+        if not filepath:
+            safe_snackbar("File not found")
+            return
+        try:
+            from jnius import autoclass, cast
+            Intent = autoclass('android.content.Intent')
+            Uri = autoclass('android.net.Uri')
+            File = autoclass('java.io.File')
+            Parcelable = autoclass('android.os.Parcelable')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
+            java_file = File(filepath)
+            uri = Uri.fromFile(java_file)
+            intent = Intent(Intent.ACTION_SEND)
+            intent.setType("audio/*")
+            # Cast Uri to Parcelable for correct putExtra overload
+            intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            chooser = Intent.createChooser(intent, "Share audio")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            PythonActivity.mActivity.startActivity(chooser)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            self.status_text = f"Error sharing: {str(e)[:100]}"
+            safe_snackbar("Could not share file")
 
     def _read_episodes(self):
         with _episodes_lock:
@@ -493,19 +523,12 @@ class YouTubePodcastApp(MDApp):
 
                 # Find the downloaded file
                 final_path = None
-                possible_names = [
-                    f"{video_id}.{ext}",
-                    f"{video_id}.m4a",
-                    f"{video_id}.webm",
-                    f"{video_id}.opus",
-                ]
-                for name in possible_names:
+                for name in [f"{video_id}.{ext}", f"{video_id}.m4a", f"{video_id}.webm", f"{video_id}.opus"]:
                     p = os.path.join(self.download_dir, name)
                     if os.path.exists(p):
                         final_path = p
                         break
 
-                # Fallback: search for any file starting with video_id
                 if not final_path:
                     try:
                         for f in os.listdir(self.download_dir):
@@ -519,7 +542,7 @@ class YouTubePodcastApp(MDApp):
                     Clock.schedule_once(lambda dt: self._download_error("File not found after download"))
                     return
 
-                # Try to rename to a readable name
+                # Rename to readable name
                 try:
                     file_ext = os.path.splitext(final_path)[1]
                     safe_name = f"{self._sanitize_filename(title)}_{video_id}{file_ext}"
@@ -528,7 +551,7 @@ class YouTubePodcastApp(MDApp):
                         os.rename(final_path, new_path)
                         final_path = new_path
                 except Exception:
-                    pass  # Keep original filename if rename fails
+                    pass
 
                 filesize = 0
                 try:
