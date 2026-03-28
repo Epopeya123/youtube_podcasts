@@ -103,7 +103,6 @@ def fetch_videos_from_ytdlp(max_episodes):
         "quiet": False,
         "no_warnings": False,
         "playlistend": max_episodes * 3,
-        "extractor_args": {"youtube": {"player_client": ["web"]}},
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -158,7 +157,6 @@ def download_audio(video_id, output_dir):
         "quiet": False,
         "no_warnings": False,
         "progress_hooks": [progress_hook],
-        "extractor_args": {"youtube": {"player_client": ["web"]}},
         "sleep_interval": 2,
         "max_sleep_interval": 5,
     }
