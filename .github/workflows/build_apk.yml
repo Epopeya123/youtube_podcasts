@@ -14,6 +14,9 @@ concurrency:
 env:
   BUILDOZER_WARN_ON_ROOT: "0"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -43,30 +46,32 @@ jobs:
             automake cmake lld ccache
 
       - name: Install Buildozer and Cython
-        run: pip install buildozer cython
+        run: |
+          # Pin Cython <3 because pyjnius doesn't compile with Cython 3.x
+          pip install "cython<3" buildozer
 
       - name: Cache Buildozer global
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-global-v1
+          key: buildozer-global-v2
           restore-keys: buildozer-global-
 
       - name: Cache Buildozer local
         uses: actions/cache@v4
         with:
           path: app/.buildozer
-          key: buildozer-local-v1-${{ hashFiles('app/buildozer.spec') }}
-          restore-keys: buildozer-local-v1-
+          key: buildozer-local-v2-${{ hashFiles('app/buildozer.spec') }}
+          restore-keys: buildozer-local-v2-
 
       - name: Build APK
         working-directory: app
         run: |
           set -e
-          echo "=== Starting Buildozer ==="
+          echo "=== Build info ==="
           echo "Python: $(python --version)"
-          echo "Buildozer: $(buildozer version 2>&1 || true)"
-          echo "BUILDOZER_WARN_ON_ROOT=$BUILDOZER_WARN_ON_ROOT"
+          echo "Cython: $(cython --version 2>&1)"
+          echo "Buildozer: $(pip show buildozer | grep Version)"
           echo ""
           buildozer -v android debug 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
@@ -78,11 +83,26 @@ jobs:
           fi
           if ! ls bin/*.apk 1>/dev/null 2>&1; then
             echo "ERROR: Build completed but no APK found in bin/"
-            ls -la bin/ 2>/dev/null || echo "bin/ directory does not exist"
             exit 1
           fi
           echo "APK built successfully:"
           ls -la bin/*.apk
+
+      - name: Save build log to repo (so it can be checked remotely)
+        if: always()
+        run: |
+          mkdir -p build-logs
+          if [ -f app/build.log ]; then
+            # Save last 500 lines (most relevant part)
+            tail -500 app/build.log > build-logs/latest-build.log
+          else
+            echo "No build log produced" > build-logs/latest-build.log
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add build-logs/latest-build.log
+          git diff --cached --quiet || git commit -m "Update build log [skip ci]"
+          git push || true
 
       - name: Upload APK
         if: always()
@@ -92,7 +112,7 @@ jobs:
           path: app/bin/*.apk
           if-no-files-found: warn
 
-      - name: Upload build log
+      - name: Upload full build log
         if: always()
         uses: actions/upload-artifact@v4
         with:

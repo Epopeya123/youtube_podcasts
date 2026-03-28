@@ -3,3 +3,5 @@ public/
 __pycache__/
 *.pyc
 .channel_id
+app/.buildozer/
+app/bin/
