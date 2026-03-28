@@ -196,7 +196,7 @@ MDScreen:
                     adaptive_height: True
 
                 MDLabel:
-                    text: "Tap play icon | Tap share icon to send"
+                    text: "Tap play icon | Tap share link below episode"
                     theme_text_color: "Hint"
                     adaptive_height: True
                     font_style: "Caption"
@@ -319,7 +319,7 @@ class YouTubePodcastApp(MDApp):
 
     def load_episodes(self):
         try:
-            from kivymd.uix.list import TwoLineAvatarIconListItem, IconLeftWidget, IconRightWidget
+            from kivymd.uix.list import TwoLineAvatarListItem, IconLeftWidget
         except ImportError:
             return
 
@@ -337,25 +337,29 @@ class YouTubePodcastApp(MDApp):
                     date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
                 filename = ep.get("filename", "")
 
-                # Play icon (left) - triggers playback
                 play_icon = IconLeftWidget(icon="play-circle")
                 play_icon.bind(on_release=lambda x, f=filename: self.play_episode(f))
 
-                # Share icon (right) - triggers share
-                share_icon = IconRightWidget(icon="share-variant")
-                share_icon.bind(on_release=lambda x, f=filename: self.share_episode(f))
-
-                # Use TwoLineAvatarIconListItem for left + right icons
-                # No on_release here to avoid double-firing with icon callbacks
-                item = TwoLineAvatarIconListItem(
+                # TwoLineAvatarListItem (proven to work on this build)
+                item = TwoLineAvatarListItem(
                     text=str(ep.get("title", "Unknown")),
-                    secondary_text=f"{mins} min  |  {date}",
+                    secondary_text=f"{mins} min  |  Tap share below  |  {date}",
                 )
 
                 item.add_widget(play_icon)
-                item.add_widget(share_icon)
                 episode_list.add_widget(item)
-            except Exception:
+
+                # Share button as a separate row under each episode
+                from kivymd.uix.list import OneLineListItem
+                share_item = OneLineListItem(
+                    text="      ↳ Share this episode",
+                    theme_text_color="Custom",
+                    text_color=(0.6, 0.4, 1, 0.8),
+                    on_release=lambda x, f=filename: self.share_episode(f),
+                )
+                episode_list.add_widget(share_item)
+            except Exception as e:
+                log_crash(type(e), e, e.__traceback__)
                 continue
 
     def _get_filepath(self, filename):
