@@ -4,7 +4,6 @@ import json
 import os
 import re
 import threading
-from pathlib import Path
 
 from kivy.clock import Clock
 from kivy.lang import Builder
@@ -21,7 +20,7 @@ _episodes_lock = threading.Lock()
 
 
 def get_data_dir():
-    """Get the app's data directory."""
+    """Get the app's writable data directory."""
     try:
         from android.storage import app_storage_path
         return app_storage_path()
@@ -30,11 +29,14 @@ def get_data_dir():
 
 
 def get_download_dir():
-    """Get the download directory for audio files."""
+    """Get the download directory for audio files (scoped-storage safe)."""
     try:
-        from android.storage import primary_external_storage_path
-        path = os.path.join(primary_external_storage_path(), "Podcasts", "AI_News_NateBJones")
-    except ImportError:
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        activity = PythonActivity.mActivity
+        ext_dir = activity.getExternalFilesDir(None)
+        path = os.path.join(ext_dir.getAbsolutePath(), "Podcasts")
+    except (ImportError, Exception):
         path = os.path.expanduser("~/Podcasts/AI_News_NateBJones")
     os.makedirs(path, exist_ok=True)
     return path
@@ -59,6 +61,7 @@ MDScreen:
 
         # Top App Bar
         MDTopAppBar:
+            type: "small"
             MDTopAppBarTitle:
                 text: "YouTube Podcasts"
 
@@ -179,6 +182,14 @@ class YouTubePodcastApp(MDApp):
         self.request_android_permissions()
         self.load_episodes()
         self._handle_android_intent()
+
+    def on_pause(self):
+        """Allow the app to survive going to background on Android."""
+        return True
+
+    def on_resume(self):
+        """Refresh episode list when app returns to foreground."""
+        self.load_episodes()
 
     def request_android_permissions(self):
         """Request runtime permissions on Android 6+."""
@@ -317,7 +328,8 @@ class YouTubePodcastApp(MDApp):
                 downloaded = d.get("downloaded_bytes", 0)
                 if total > 0:
                     pct = downloaded / total * 100
-                    Clock.schedule_once(lambda dt: self._update_progress(pct, "Downloading..."))
+                    # Capture pct by value with default arg
+                    Clock.schedule_once(lambda dt, p=pct: self._update_progress(p, "Downloading..."))
             elif d["status"] == "finished":
                 Clock.schedule_once(lambda dt: self._update_progress(95, "Finishing up..."))
 
@@ -352,7 +364,13 @@ class YouTubePodcastApp(MDApp):
                                 final_path = os.path.join(self.download_dir, f)
                                 break
 
-                    filesize = os.path.getsize(final_path) if os.path.exists(final_path) else 0
+                    if not os.path.exists(final_path):
+                        Clock.schedule_once(
+                            lambda dt: self._download_error("Downloaded file not found on disk")
+                        )
+                        return
+
+                    filesize = os.path.getsize(final_path)
 
                     metadata = {
                         "id": video_id,
@@ -367,12 +385,15 @@ class YouTubePodcastApp(MDApp):
                     episodes.insert(0, metadata)
                     self._save_episodes(episodes)
 
-                    Clock.schedule_once(lambda dt: self._download_complete(title))
+                    Clock.schedule_once(lambda dt, t=title: self._download_complete(t))
                 else:
                     Clock.schedule_once(lambda dt: self._download_error("No video info returned"))
+        except yt_dlp.utils.DownloadError as e:
+            msg = str(e).split('\n')[0][:200]
+            Clock.schedule_once(lambda dt, m=msg: self._download_error(m))
         except Exception as e:
-            error_msg = str(e)
-            Clock.schedule_once(lambda dt: self._download_error(error_msg))
+            msg = str(e)[:200]
+            Clock.schedule_once(lambda dt, m=msg: self._download_error(m))
 
     def _sanitize_filename(self, title):
         safe = "".join(c if c.isalnum() or c in " -_" else "" for c in title)
@@ -400,7 +421,7 @@ class YouTubePodcastApp(MDApp):
         self.is_downloading = False
         self.root.ids.progress_bar.opacity = 0
         self.root.ids.download_btn.disabled = False
-        self.status_text = f"Error: {error[:200]}"
+        self.status_text = f"Error: {error}"
         self.show_snackbar("Download failed")
 
     def show_snackbar(self, text):
