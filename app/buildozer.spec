@@ -6,7 +6,7 @@ package.name = ytpodcasts
 package.domain = org.epopeya123
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,xml
-version = 1.0.0
+version = 1.0.1
 
 # Dependencies - only pure-Python packages that work with p4a
 # No FFmpeg needed - we download m4a directly
