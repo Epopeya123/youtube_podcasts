@@ -25,13 +25,13 @@ https://github.com/kivy/python-for-android.git
 [0m[1;30m# Run ['/opt/hostedtoolcache/Python/3.11.15/x64/bin/python', '-m', 'pip', 'install', '-q', '--user', 'appdirs', 'colorama>=0.3.3', 'jinja2', 'sh>=1.10, <2.0; sys_platform!="win32"', 'build', 'toml', 'packaging', 'setuptools'][0m
 [0m[1;30m# Cwd None[0m
 [WARNING]: prerequisites.py is experimental and does not support all prerequisites yet.
-[WARNING]: Please report any issues to the python-for-android issue tracker.
 [0m[1;34m# Apache ANT found at /home/runner/.buildozer/android/platform/apache-ant-1.9.4[0m
 [0m[1;34m# Android SDK found at /home/runner/.buildozer/android/platform/android-sdk[0m
 [0m[1;34m# Recommended android's NDK version by p4a is: 25b[0m
 [0m[1;34m# Android NDK found at /home/runner/.buildozer/android/platform/android-ndk-r25b[0m
 [0m[1;30m# Run ['/opt/hostedtoolcache/Python/3.11.15/x64/bin/python', '-m', 'pythonforandroid.toolchain', 'aab', '-h', '--color=always', '--storage-dir=/home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/platform/build-arm64-v8a', '--ndk-api=26', '--ignore-setup-py', '--debug'][0m
 [0m[1;30m# Cwd /home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/platform/python-for-android[0m
+[WARNING]: Please report any issues to the python-for-android issue tracker.
 [WARNING]: prerequisites.py is experimental and does not support all prerequisites yet.
 [WARNING]: Please report any issues to the python-for-android issue tracker.
 usage: toolchain.py aab [-h] [--debug] [--color {always,never,auto}]
@@ -210,7 +210,7 @@ options:
 [1m[90m[DEBUG][39m[0m:   Create directory src/main/assets
 Compiling '/home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/app/main.py'...
 Compiling '/home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/app/sitecustomize.py'...
-[1m[90m[DEBUG][39m[0m:   Remove directory and subdirectory /tmp/p4a-extra-env-pj__g38d
+[1m[90m[DEBUG][39m[0m:   Remove directory and subdirectory /tmp/p4a-extra-env-7q5bpnac
 [1m[90m[DEBUG][39m[0m:   Remove directory and subdirectory src/main/res
 [1m[INFO][0m:    Detected highest available build tools version to be 37.0.0
 stty: 'standard input': Inappropriate ioctl for device
@@ -256,11 +256,13 @@ stty: 'standard input': Inappropriate ioctl for device
 [1m[90m[DEBUG][39m[0m:   	> Task :generateDebugAssets UP-TO-DATE
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugAssets
 [1m[90m[DEBUG][39m[0m:   	> Task :processDebugJavaRes NO-SOURCE
-[1m[90m[DEBUG][39m[0m:   	> Task :compressDebugAssets
 [1m[90m[DEBUG][39m[0m:   	> Task :processDebugManifestForPackage
-[1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugJavaResource
-[1m[90m[DEBUG][39m[0m:   	> Task :desugarDebugFileDependencies
+[1m[90m[DEBUG][39m[0m:   	> Task :compressDebugAssets
 [1m[90m[DEBUG][39m[0m:   	> Task :checkDebugDuplicateClasses
+[1m[90m[DEBUG][39m[0m:   	> Task :desugarDebugFileDependencies
+[1m[90m[DEBUG][39m[0m:   	> Task :mergeExtDexDebug
+[1m[90m[DEBUG][39m[0m:   	> Task :mergeLibDexDebug
+[1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugJavaResource
 [1m[90m[DEBUG][39m[0m:   	> Task :processDebugResources
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugJniLibFolders
 [1m[90m[DEBUG][39m[0m:   	
@@ -268,8 +270,6 @@ stty: 'standard input': Inappropriate ioctl for device
 [1m[90m[DEBUG][39m[0m:   	Note: Some input files use or override a deprecated API.
 [1m[90m[DEBUG][39m[0m:   	Note: Recompile with -Xlint:deprecation for details.
 [1m[90m[DEBUG][39m[0m:   	
-[1m[90m[DEBUG][39m[0m:   	> Task :mergeExtDexDebug
-[1m[90m[DEBUG][39m[0m:   	> Task :mergeLibDexDebug
 [1m[90m[DEBUG][39m[0m:   	> Task :dexBuilderDebug
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeProjectDexDebug
 [1m[90m[DEBUG][39m[0m:   	> Task :mergeDebugNativeLibs
@@ -287,7 +287,7 @@ stty: 'standard input': Inappropriate ioctl for device
 [1m[90m[DEBUG][39m[0m:   	
 [1m[90m[DEBUG][39m[0m:   	See https://docs.gradle.org/8.0.2/userguide/command_line_interface.html#sec:command_line_warnings
 [1m[90m[DEBUG][39m[0m:   	
-[1m[90m[DEBUG][39m[0m:   	BUILD SUCCESSFUL in 43s
+[1m[90m[DEBUG][39m[0m:   	BUILD SUCCESSFUL in 34s
 [1m[90m[DEBUG][39m[0m:   	33 actionable tasks: 33 executed
 [1m[INFO][0m:    [36m<- directory context /home/runner/work/youtube_podcasts/youtube_podcasts/app/.buildozer/android/platform/python-for-android[39m
 [1m[90m[DEBUG][39m[0m:   All possible dists: [<Distribution: name ytpodcasts with recipes (hostpython3, libffi, openssl, sdl2_image, sdl2_mixer, sdl2_ttf, sqlite3, python3, sdl2, setuptools, pycparser, six, cffi, pyjnius, android, kivy, pycryptodome, mutagen, certifi, yt-dlp, idna, chardet, materialyoucolor, kivymd, requests, urllib3)>]
