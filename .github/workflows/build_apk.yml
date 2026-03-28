@@ -1,0 +1,76 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'app/**'
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ccache \
+            git \
+            libncurses5 \
+            libstdc++6 \
+            libffi-dev \
+            libssl-dev \
+            libtool \
+            openjdk-17-jdk \
+            unzip \
+            zip \
+            zlib1g-dev \
+            autoconf \
+            automake \
+            cmake
+
+      - name: Install Buildozer and Cython
+        run: pip install buildozer cython
+
+      - name: Cache Buildozer
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            app/.buildozer
+          key: buildozer-${{ hashFiles('app/buildozer.spec') }}
+          restore-keys: |
+            buildozer-
+
+      - name: Build APK
+        working-directory: app
+        run: |
+          yes | buildozer android debug 2>&1 | tee build.log | tail -100
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-podcasts-apk
+          path: app/bin/*.apk
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: app/build.log
