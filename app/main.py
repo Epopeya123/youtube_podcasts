@@ -73,6 +73,20 @@ except Exception:
     log_crash(*sys.exc_info())
     raise
 
+# Fix stdout/stderr for Android (Kivy replaces them with non-file objects)
+import io
+if not hasattr(sys.stdout, 'write') or isinstance(sys.stdout, str):
+    sys.stdout = io.StringIO()
+if not hasattr(sys.stderr, 'write') or isinstance(sys.stderr, str):
+    sys.stderr = io.StringIO()
+
+
+class YTDLPLogger:
+    """Silent logger for yt-dlp to avoid stdout/stderr issues on Android."""
+    def debug(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
+
 # Thread lock for episodes.json
 _episodes_lock = threading.Lock()
 
@@ -414,6 +428,7 @@ class YouTubePodcastApp(MDApp):
             "quiet": True,
             "no_warnings": True,
             "progress_hooks": [progress_hook],
+            "logger": YTDLPLogger(),
         }
 
         try:
