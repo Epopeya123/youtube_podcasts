@@ -301,25 +301,22 @@ class YouTubePodcastApp(MDApp):
             Intent = autoclass('android.content.Intent')
             String = autoclass('java.lang.String')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            ComponentName = autoclass('android.content.ComponentName')
 
             intent = Intent()
             intent.setAction(Intent.ACTION_SEND)
             intent.setType("text/plain")
             intent.putExtra(Intent.EXTRA_TEXT, String(text))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-            # Target Termux specifically
-            intent.setComponent(ComponentName(
-                String("com.termux"),
-                String("com.termux.app.TermuxOpenReceiver"),
-            ))
-
-            PythonActivity.mActivity.startActivity(intent)
+            title = String("Open with Termux")
+            chooser = Intent.createChooser(intent, cast('java.lang.CharSequence', title))
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            PythonActivity.mActivity.startActivity(chooser)
             return True
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
-            self.status_text = f"Error: Could not launch Termux ({str(e)[:80]})"
-            safe_snackbar("Could not open Termux. Is it installed?")
+            self.status_text = f"Error: {str(e)[:80]}"
+            safe_snackbar("Could not open share menu")
             return False
 
     def download_single_video(self):
