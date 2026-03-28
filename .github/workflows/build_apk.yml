@@ -12,8 +12,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -24,6 +24,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -31,21 +37,19 @@ jobs:
             build-essential \
             ccache \
             git \
-            libncurses5 \
-            libstdc++6 \
             libffi-dev \
             libssl-dev \
             libtool \
-            openjdk-17-jdk \
             unzip \
             zip \
             zlib1g-dev \
             autoconf \
             automake \
-            cmake
+            cmake \
+            lld
 
       - name: Install Buildozer and Cython
-        run: pip install buildozer==1.5.0 cython==3.0.10
+        run: pip install buildozer cython
 
       - name: Cache Buildozer
         uses: actions/cache@v4
@@ -53,16 +57,17 @@ jobs:
           path: |
             ~/.buildozer
             app/.buildozer
-          key: buildozer-${{ hashFiles('app/buildozer.spec') }}
+          key: buildozer-v2-${{ hashFiles('app/buildozer.spec') }}
           restore-keys: |
-            buildozer-
+            buildozer-v2-
 
       - name: Build APK
         working-directory: app
         run: |
-          yes | buildozer android debug 2>&1 | tee build.log
+          yes | buildozer -v android debug 2>&1 | tee build.log
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: youtube-podcasts-apk
