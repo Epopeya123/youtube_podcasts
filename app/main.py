@@ -366,12 +366,29 @@ class YouTubePodcastApp(MDApp):
         return None
 
     def play_episode(self, filename):
-        """Play audio using Android's native MediaPlayer."""
+        """Play/stop audio using Android's native MediaPlayer. Tap again to stop."""
         filepath = self._get_filepath(filename)
         if not filepath:
             safe_snackbar("File not found")
             return
         try:
+            # If the SAME file is already playing, stop it (toggle behavior)
+            if hasattr(self, '_playing_file') and self._playing_file == filename:
+                if hasattr(self, '_player') and self._player:
+                    try:
+                        if self._player.isPlaying():
+                            self._player.stop()
+                            self._player.release()
+                            self._player = None
+                            self._playing_file = None
+                            self.status_text = "Stopped"
+                            safe_snackbar("Stopped")
+                            return
+                    except Exception:
+                        pass
+                self._playing_file = None
+
+            # Stop any previous player (different file)
             if hasattr(self, '_player') and self._player:
                 try:
                     self._player.stop()
@@ -389,8 +406,9 @@ class YouTubePodcastApp(MDApp):
             player.prepare()
             player.start()
             self._player = player
+            self._playing_file = filename
             self.status_text = f"Playing: {os.path.basename(filepath)[:40]}"
-            safe_snackbar("Playing audio")
+            safe_snackbar("Playing (tap again to stop)")
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.status_text = f"Error: {str(e)[:100]}"
