@@ -12,7 +12,7 @@ version = 1.0.1
 # No FFmpeg needed - we download m4a directly
 # No brotli/websockets (C extensions, no p4a recipe, optional for yt-dlp)
 # pycryptodome instead of pycryptodomex (has p4a recipe)
-requirements = python3,kivy,kivymd,materialyoucolor,yt-dlp,certifi,urllib3,requests,mutagen,pycryptodome
+requirements = python3,kivy==2.3.1,kivymd==1.2.0,yt-dlp,certifi,urllib3,requests,mutagen,pycryptodome
 
 # Android settings
 android.permissions = INTERNET,READ_MEDIA_AUDIO

@@ -1,17 +1,49 @@
-"""YouTube Podcast Downloader - Android App"""
+"""YouTube Podcast Downloader - Android App (KivyMD 1.x compatible)"""
 
 import json
 import os
 import re
+import sys
 import threading
+import traceback
 
+# Crash logging - write errors to a file before anything else
+CRASH_LOG_PATH = None
+
+def setup_crash_logging():
+    global CRASH_LOG_PATH
+    try:
+        from android.storage import primary_external_storage_path
+        crash_dir = os.path.join(primary_external_storage_path(), "Podcasts", "AI_News_NateBJones")
+        os.makedirs(crash_dir, exist_ok=True)
+        CRASH_LOG_PATH = os.path.join(crash_dir, "crash_log.txt")
+    except ImportError:
+        CRASH_LOG_PATH = os.path.expanduser("~/crash_log.txt")
+
+def log_crash(exc_type, exc_value, exc_tb):
+    """Write crash info to a file the user can find."""
+    error_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        if CRASH_LOG_PATH:
+            with open(CRASH_LOG_PATH, "a") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"CRASH at {__import__('datetime').datetime.now()}\n")
+                f.write(error_text)
+                f.write(f"\n{'='*60}\n")
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+setup_crash_logging()
+sys.excepthook = log_crash
+
+# Now import Kivy/KivyMD
 from kivy.clock import Clock
 from kivy.lang import Builder
 from kivy.metrics import dp
 from kivy.properties import StringProperty, BooleanProperty
 from kivymd.app import MDApp
-from kivymd.uix.list import MDListItem, MDListItemHeadlineText, MDListItemSupportingText, MDListItemLeadingIcon
-from kivymd.uix.snackbar import MDSnackbar, MDSnackbarText
+from kivymd.uix.snackbar import Snackbar
 
 import yt_dlp
 
@@ -42,124 +74,86 @@ def get_download_dir():
     return path
 
 
-EPISODES_FILE = None  # Set in build()
+EPISODES_FILE = None
 
 KV = '''
-<EpisodeItem>:
-    MDListItemLeadingIcon:
-        icon: root.icon
-    MDListItemHeadlineText:
-        text: root.title
-    MDListItemSupportingText:
-        text: root.subtitle
-
 MDScreen:
-    md_bg_color: app.theme_cls.surfaceColor
+    md_bg_color: app.theme_cls.bg_dark
 
     MDBoxLayout:
         orientation: "vertical"
 
-        # Top App Bar
         MDTopAppBar:
-            type: "small"
-            MDTopAppBarTitle:
-                text: "YouTube Podcasts"
+            title: "YouTube Podcasts"
+            elevation: 4
+            md_bg_color: app.theme_cls.primary_color
 
-        # Main content
-        MDBoxLayout:
-            orientation: "vertical"
-            padding: dp(20)
-            spacing: dp(16)
-            adaptive_height: True
-
-            # URL Input
-            MDTextField:
-                id: url_input
-                mode: "outlined"
-                size_hint_x: 1
-
-                MDTextFieldHintText:
-                    text: "Paste YouTube link here"
-
-                MDTextFieldLeadingIcon:
-                    icon: "link-variant"
-
-            # Buttons row
-            MDBoxLayout:
-                orientation: "horizontal"
-                spacing: dp(12)
-                adaptive_height: True
-
-                MDButton:
-                    id: paste_btn
-                    style: "outlined"
-                    on_release: app.paste_from_clipboard()
-                    size_hint_x: 0.4
-
-                    MDButtonIcon:
-                        icon: "content-paste"
-
-                    MDButtonText:
-                        text: "Paste"
-
-                MDButton:
-                    id: download_btn
-                    style: "filled"
-                    on_release: app.start_download()
-                    size_hint_x: 0.6
-
-                    MDButtonIcon:
-                        icon: "download"
-
-                    MDButtonText:
-                        text: "Download"
-
-            # Progress bar (hidden by default)
-            MDLinearProgressIndicator:
-                id: progress_bar
-                size_hint_x: 1
-                opacity: 0
-                value: 0
-
-            # Status text
-            MDLabel:
-                id: status_label
-                text: app.status_text
-                theme_text_color: "Secondary"
-                adaptive_height: True
-                font_style: "Body"
-                role: "medium"
-
-        # Divider
-        MDDivider:
-
-        # Episode list header
-        MDBoxLayout:
-            padding: [dp(20), dp(12), dp(20), dp(4)]
-            adaptive_height: True
-
-            MDLabel:
-                text: "Downloaded Episodes"
-                theme_text_color: "Primary"
-                font_style: "Title"
-                role: "small"
-                adaptive_height: True
-
-        # Scrollable episode list
         ScrollView:
-            size_hint_y: 1
+            MDBoxLayout:
+                orientation: "vertical"
+                padding: dp(20)
+                spacing: dp(16)
+                adaptive_height: True
 
-            MDList:
-                id: episode_list
-                padding: [dp(4), 0, dp(4), 0]
+                # URL Input
+                MDTextField:
+                    id: url_input
+                    hint_text: "Paste YouTube link here"
+                    icon_left: "link-variant"
+                    mode: "rectangle"
+                    size_hint_x: 1
+
+                # Buttons row
+                MDBoxLayout:
+                    orientation: "horizontal"
+                    spacing: dp(12)
+                    adaptive_height: True
+                    size_hint_y: None
+                    height: dp(48)
+
+                    MDFlatButton:
+                        id: paste_btn
+                        text: "PASTE"
+                        icon: "content-paste"
+                        on_release: app.paste_from_clipboard()
+                        size_hint_x: 0.4
+
+                    MDRaisedButton:
+                        id: download_btn
+                        text: "DOWNLOAD"
+                        icon: "download"
+                        on_release: app.start_download()
+                        size_hint_x: 0.6
+
+                # Progress bar (hidden by default)
+                MDProgressBar:
+                    id: progress_bar
+                    size_hint_x: 1
+                    opacity: 0
+                    value: 0
+
+                # Status text
+                MDLabel:
+                    id: status_label
+                    text: app.status_text
+                    theme_text_color: "Secondary"
+                    adaptive_height: True
+                    font_style: "Caption"
+
+                # Divider
+                MDSeparator:
+
+                # Episode list header
+                MDLabel:
+                    text: "Downloaded Episodes"
+                    theme_text_color: "Primary"
+                    font_style: "Subtitle1"
+                    adaptive_height: True
+
+                # Episode list
+                MDList:
+                    id: episode_list
 '''
-
-
-class EpisodeItem(MDListItem):
-    """A single episode in the list."""
-    title = StringProperty("")
-    subtitle = StringProperty("")
-    icon = StringProperty("music-note")
 
 
 class YouTubePodcastApp(MDApp):
@@ -184,15 +178,12 @@ class YouTubePodcastApp(MDApp):
         self._handle_android_intent()
 
     def on_pause(self):
-        """Allow the app to survive going to background on Android."""
         return True
 
     def on_resume(self):
-        """Refresh episode list when app returns to foreground."""
         self.load_episodes()
 
     def request_android_permissions(self):
-        """Request runtime permissions on Android 6+."""
         try:
             from android.permissions import request_permissions, Permission
             request_permissions([
@@ -203,7 +194,6 @@ class YouTubePodcastApp(MDApp):
             pass
 
     def _handle_android_intent(self):
-        """Handle URLs shared to this app from other apps."""
         try:
             from android import activity
             activity.bind(on_new_intent=self._on_new_intent)
@@ -221,22 +211,21 @@ class YouTubePodcastApp(MDApp):
                 url = intent.getStringExtra("android.intent.extra.TEXT")
                 if url and self.extract_video_id(url):
                     self.root.ids.url_input.text = url
-                    self.show_snackbar("YouTube link received! Tap Download.")
+                    Snackbar(text="YouTube link received! Tap Download.").open()
         except Exception:
             pass
 
     def paste_from_clipboard(self):
-        """Paste URL from clipboard."""
         try:
             from kivy.core.clipboard import Clipboard
             text = Clipboard.paste()
             if text:
                 self.root.ids.url_input.text = text.strip()
         except Exception:
-            self.show_snackbar("Could not access clipboard")
+            Snackbar(text="Could not access clipboard").open()
 
     def load_episodes(self):
-        """Load and display downloaded episodes."""
+        from kivymd.uix.list import TwoLineAvatarListItem, IconLeftWidget
         episodes = self._read_episodes()
         episode_list = self.root.ids.episode_list
         episode_list.clear_widgets()
@@ -247,11 +236,12 @@ class YouTubePodcastApp(MDApp):
             if len(date) == 8:
                 date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
-            item = EpisodeItem(
-                title=ep.get("title", "Unknown"),
-                subtitle=f"{mins} min  |  {date}",
-                icon="music-note",
+            icon = IconLeftWidget(icon="music-note")
+            item = TwoLineAvatarListItem(
+                text=ep.get("title", "Unknown"),
+                secondary_text=f"{mins} min  |  {date}",
             )
+            item.add_widget(icon)
             episode_list.add_widget(item)
 
     def _read_episodes(self):
@@ -286,23 +276,22 @@ class YouTubePodcastApp(MDApp):
 
     def start_download(self):
         if self.is_downloading:
-            self.show_snackbar("Download already in progress...")
+            Snackbar(text="Download already in progress...").open()
             return
 
         url = self.root.ids.url_input.text.strip()
         if not url:
-            self.show_snackbar("Please paste a YouTube link first")
+            Snackbar(text="Please paste a YouTube link first").open()
             return
 
         video_id = self.extract_video_id(url)
         if not video_id:
-            self.show_snackbar("Invalid YouTube URL")
+            Snackbar(text="Invalid YouTube URL").open()
             return
 
-        # Check if already downloaded
         episodes = self._read_episodes()
         if any(ep.get("id") == video_id for ep in episodes):
-            self.show_snackbar("Already downloaded!")
+            Snackbar(text="Already downloaded!").open()
             return
 
         self.is_downloading = True
@@ -319,7 +308,6 @@ class YouTubePodcastApp(MDApp):
         thread.start()
 
     def _download_thread(self, video_id):
-        """Run download in background thread."""
         output_template = os.path.join(self.download_dir, "%(id)s.%(ext)s")
 
         def progress_hook(d):
@@ -328,12 +316,10 @@ class YouTubePodcastApp(MDApp):
                 downloaded = d.get("downloaded_bytes", 0)
                 if total > 0:
                     pct = downloaded / total * 100
-                    # Capture pct by value with default arg
                     Clock.schedule_once(lambda dt, p=pct: self._update_progress(p, "Downloading..."))
             elif d["status"] == "finished":
                 Clock.schedule_once(lambda dt: self._update_progress(95, "Finishing up..."))
 
-        # Download as m4a directly (no FFmpeg needed on Android)
         ydl_opts = {
             "format": "bestaudio[ext=m4a]/bestaudio",
             "outtmpl": output_template,
@@ -358,7 +344,6 @@ class YouTubePodcastApp(MDApp):
                     if os.path.exists(src_path) and not os.path.exists(final_path):
                         os.rename(src_path, final_path)
                     elif not os.path.exists(src_path) and not os.path.exists(final_path):
-                        # File might have a different extension, find it
                         for f in os.listdir(self.download_dir):
                             if f.startswith(video_id):
                                 final_path = os.path.join(self.download_dir, f)
@@ -371,7 +356,6 @@ class YouTubePodcastApp(MDApp):
                         return
 
                     filesize = os.path.getsize(final_path)
-
                     metadata = {
                         "id": video_id,
                         "title": title,
@@ -384,7 +368,6 @@ class YouTubePodcastApp(MDApp):
                     episodes = self._read_episodes()
                     episodes.insert(0, metadata)
                     self._save_episodes(episodes)
-
                     Clock.schedule_once(lambda dt, t=title: self._download_complete(t))
                 else:
                     Clock.schedule_once(lambda dt: self._download_error("No video info returned"))
@@ -410,7 +393,7 @@ class YouTubePodcastApp(MDApp):
         self.root.ids.download_btn.disabled = False
         self.root.ids.url_input.text = ""
         self.status_text = f"Downloaded: {title}"
-        self.show_snackbar("Download complete!")
+        Snackbar(text="Download complete!").open()
         self.load_episodes()
 
     def _hide_progress(self):
@@ -422,16 +405,16 @@ class YouTubePodcastApp(MDApp):
         self.root.ids.progress_bar.opacity = 0
         self.root.ids.download_btn.disabled = False
         self.status_text = f"Error: {error}"
-        self.show_snackbar("Download failed")
+        Snackbar(text="Download failed").open()
 
     def show_snackbar(self, text):
-        MDSnackbar(
-            MDSnackbarText(text=text),
-            y=dp(24),
-            pos_hint={"center_x": 0.5},
-            size_hint_x=0.9,
-        ).open()
+        Snackbar(text=text).open()
 
 
 if __name__ == "__main__":
-    YouTubePodcastApp().run()
+    try:
+        YouTubePodcastApp().run()
+    except Exception:
+        # Last resort crash logging
+        log_crash(*sys.exc_info())
+        raise
