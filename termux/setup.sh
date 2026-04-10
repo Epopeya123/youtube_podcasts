@@ -51,7 +51,11 @@ fi
 # Create the run script
 cat > "$HOME/run_podcast_download.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
-# Download new podcast episodes
+# Wait up to 60 seconds for network (Android may have WiFi asleep)
+for i in $(seq 1 12); do
+    ping -c 1 -W 5 google.com >/dev/null 2>&1 && break
+    sleep 5
+done
 cd "$HOME/youtube_podcasts"
 python download_audio.py --max-episodes 3 --output-dir "$HOME/storage/shared/Podcasts/AI_News_NateBJones" 2>&1 | tee -a "$HOME/podcast_download.log"
 echo "--- $(date) ---" >> "$HOME/podcast_download.log"
