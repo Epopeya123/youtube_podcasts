@@ -14,7 +14,9 @@ import yt_dlp
 CHANNEL_URL = "https://www.youtube.com/@natebjones/videos"
 EPISODES_FILE = "episodes.json"
 AUDIO_DIR = "audio"
+SHORTS_SUBDIR = "Shorts"
 YOUTUBE_RSS_CACHE = ".channel_id"
+SHORTS_MAX_DURATION = 180  # Videos under 3 minutes go to Shorts folder
 
 
 def load_episodes():
@@ -133,11 +135,51 @@ def sanitize_filename(title):
     return safe.strip()[:80] or "episode"
 
 
-def download_audio(video_id, output_dir):
-    """Download audio for a single video. Returns metadata dict or None on failure."""
-    os.makedirs(output_dir, exist_ok=True)
+def get_video_duration(video_id):
+    """Fetch video duration without downloading."""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                return info.get("duration", 0), info.get("title", "")
+    except Exception:
+        pass
+    return 0, ""
 
-    output_template = os.path.join(output_dir, "%(id)s.%(ext)s")
+
+def is_short_video(duration, title=""):
+    """Determine if a video is a Short based on duration and title."""
+    if duration and duration <= SHORTS_MAX_DURATION:
+        return True
+    short_indicators = ["#shorts", "#short", "#ai ", "#futureofwork", "#chatgpt"]
+    title_lower = title.lower()
+    hashtag_count = title_lower.count("#")
+    if hashtag_count >= 2 and (duration is None or duration == 0 or duration <= SHORTS_MAX_DURATION):
+        return True
+    return False
+
+
+def download_audio(video_id, output_dir):
+    """Download audio for a single video. Sorts into Shorts subfolder if short.
+    Also downloads thumbnail. Returns metadata dict or None on failure."""
+
+    # First, get duration to decide which folder
+    duration, title_preview = get_video_duration(video_id)
+    is_short = is_short_video(duration, title_preview)
+
+    if is_short:
+        actual_output_dir = os.path.join(output_dir, SHORTS_SUBDIR)
+        print(f"  -> Short video ({duration}s), saving to Shorts/")
+    else:
+        actual_output_dir = output_dir
+        if duration:
+            print(f"  -> Regular video ({duration}s)")
+
+    os.makedirs(actual_output_dir, exist_ok=True)
+
+    output_template = os.path.join(actual_output_dir, "%(id)s.%(ext)s")
 
     def progress_hook(d):
         if d["status"] == "finished":
@@ -158,6 +200,7 @@ def download_audio(video_id, output_dir):
         "progress_hooks": [progress_hook],
         "sleep_interval": 2,
         "max_sleep_interval": 5,
+        "writethumbnail": True,
     }
 
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -165,24 +208,55 @@ def download_audio(video_id, output_dir):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info:
-                mp3_path = os.path.join(output_dir, f"{video_id}.mp3")
+                mp3_path = os.path.join(actual_output_dir, f"{video_id}.mp3")
                 filesize = os.path.getsize(mp3_path) if os.path.exists(mp3_path) else 0
                 title = info.get("title", "Unknown Title")
+                actual_duration = info.get("duration", duration)
 
-                # Rename file to a readable name
+                # Re-check if it's a short now that we have actual duration
+                if not is_short and actual_duration and actual_duration <= SHORTS_MAX_DURATION:
+                    is_short = True
+                    shorts_dir = os.path.join(output_dir, SHORTS_SUBDIR)
+                    os.makedirs(shorts_dir, exist_ok=True)
+                    # Move the downloaded files to Shorts folder
+                    for f in os.listdir(actual_output_dir):
+                        if f.startswith(video_id):
+                            src = os.path.join(actual_output_dir, f)
+                            dst = os.path.join(shorts_dir, f)
+                            shutil.move(src, dst)
+                    actual_output_dir = shorts_dir
+                    mp3_path = os.path.join(actual_output_dir, f"{video_id}.mp3")
+                    print(f"  -> Moved to Shorts/ ({actual_duration}s)")
+
+                # Rename MP3 to a readable name
                 safe_name = f"{sanitize_filename(title)}.mp3"
-                readable_path = os.path.join(output_dir, safe_name)
+                readable_path = os.path.join(actual_output_dir, safe_name)
                 if os.path.exists(mp3_path) and not os.path.exists(readable_path):
                     shutil.move(mp3_path, readable_path)
+
+                # Rename thumbnail to match audio filename
+                thumb_name = None
+                for ext in ['.webp', '.jpg', '.png']:
+                    thumb_src = os.path.join(actual_output_dir, f"{video_id}{ext}")
+                    if os.path.exists(thumb_src):
+                        thumb_safe = f"{sanitize_filename(title)}{ext}"
+                        thumb_dst = os.path.join(actual_output_dir, thumb_safe)
+                        if not os.path.exists(thumb_dst):
+                            shutil.move(thumb_src, thumb_dst)
+                        thumb_name = thumb_safe
+                        print(f"  Thumbnail saved: {thumb_safe}")
+                        break
 
                 metadata = {
                     "id": video_id,
                     "title": title,
                     "description": info.get("description", ""),
                     "upload_date": info.get("upload_date", ""),
-                    "duration": info.get("duration", 0),
+                    "duration": actual_duration,
                     "filename": safe_name,
                     "filesize": filesize,
+                    "is_short": is_short,
+                    "thumbnail": thumb_name,
                     "published": False,
                 }
                 return metadata
