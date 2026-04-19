@@ -192,7 +192,14 @@ def download_audio(video_id, output_dir):
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "128",
-            }
+            },
+            {
+                "key": "FFmpegThumbnailsConvertor",
+                "format": "jpg",
+            },
+            {
+                "key": "EmbedThumbnail",
+            },
         ],
         "outtmpl": output_template,
         "quiet": False,
