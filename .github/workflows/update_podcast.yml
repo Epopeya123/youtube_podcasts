@@ -1,8 +1,9 @@
 name: Update Podcast Feed
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
+  # Schedule disabled - downloads now happen via Termux on the phone
+  # schedule:
+  #   - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       max_episodes:
