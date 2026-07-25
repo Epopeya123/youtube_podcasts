@@ -30,7 +30,7 @@ if ! git diff --quiet -- episodes.json 2>/dev/null; then
     git checkout -- episodes.json
 fi
 
-echo "[1/4] Pulling latest code..."
+echo "[1/5] Pulling latest code..."
 # Be explicit about the branch: a plain "git pull" fails when the checked-out
 # branch has no upstream configured, and set -e would abort the whole update.
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -46,12 +46,29 @@ fi
 echo "[2/4] Updating yt-dlp..."
 pip install --upgrade --quiet yt-dlp yt-dlp-ejs mutagen || echo "  (pip upgrade skipped)"
 
-echo "[3/4] Re-installing the share handler..."
+echo "[3/5] Letting the app start downloads directly..."
+# THE bug behind "I pressed DOWNLOAD and nothing happened".  Termux refuses
+# RUN_COMMAND from another app unless this is set, and it refuses *silently*:
+# the intent is accepted, the command is dropped, and no callback exists to
+# tell the app.  setup.sh has always set it, but update.sh did not -- so anyone
+# who set the phone up before this feature existed, and updated rather than
+# reinstalling, had the app talking to a Termux that was ignoring it.
+mkdir -p "$HOME/.termux"
+touch "$HOME/.termux/termux.properties"
+if grep -q "^[[:space:]]*allow-external-apps" "$HOME/.termux/termux.properties" 2>/dev/null; then
+    sed -i 's/^[[:space:]]*allow-external-apps.*/allow-external-apps = true/' \
+        "$HOME/.termux/termux.properties"
+else
+    echo "allow-external-apps = true" >> "$HOME/.termux/termux.properties"
+fi
+termux-reload-settings 2>/dev/null || true
+
+echo "[4/5] Re-installing the share handler..."
 mkdir -p "$HOME/bin"
 cp "$INSTALL_DIR/termux/termux-url-opener" "$HOME/bin/termux-url-opener"
 chmod +x "$HOME/bin/termux-url-opener"
 
-echo "[4/4] Refreshing the scheduled download script..."
+echo "[5/5] Refreshing the scheduled download script..."
 cat > "$HOME/run_podcast_download.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # Wait up to 60 seconds for network (Android may have WiFi asleep)
