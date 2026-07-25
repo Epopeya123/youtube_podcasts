@@ -18,7 +18,26 @@ permissions:
   contents: write
 
 jobs:
+  # Catch KivyMD/KV breakage in a couple of minutes instead of after a
+  # two-hour Buildozer run that fails at the end.
+  preflight:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libmtdev1 ffmpeg
+          pip install pytest yt-dlp "kivy==2.3.1" "kivymd==1.2.0"
+      - name: Run tests
+        run: bash tests/run_all.sh
+
   build:
+    needs: preflight
     runs-on: ubuntu-22.04
     timeout-minutes: 120
 

@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'download_audio.py'
+      - 'generate_feed.py'
+      - 'requirements.txt'
+      - '.github/workflows/tests.yml'
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        # Kivy needs a display to create a Window even in mock GL mode, and
+        # libmtdev for its input providers. xvfb gives us both without a device.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libmtdev1 ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest yt-dlp "kivy==2.3.1" "kivymd==1.2.0"
+
+      - name: Run tests
+        run: bash tests/run_all.sh
