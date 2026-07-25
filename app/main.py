@@ -661,13 +661,17 @@ class YouTubePodcastApp(MDApp):
         fmt = self._settings.get("audio_format", "m4a")
         if fmt == "mp3":
             self.format_help = (
-                "MP3: re-encoded on the phone. Works everywhere, but noticeably "
-                "slower to download. Currently: MP3."
+                "Currently: MP3.\n"
+                "YouTube has no MP3 to give, so its audio gets decoded and "
+                "re-encoded into an older codec. Slightly worse sound, and the "
+                "conversion is the slowest part of a download."
             )
         else:
             self.format_help = (
-                "M4A: keeps YouTube's own audio, so there is no re-encoding step. "
-                "Plays in every podcast app. Currently: M4A."
+                "Currently: M4A.\n"
+                "YouTube's own audio, saved exactly as sent - nothing is "
+                "re-encoded, so it sounds better than MP3 and downloads faster. "
+                "Plays in every Android music and podcast app."
             )
         self.storage_help = (
             f"{self._podcast_dir}/<channel>\n"

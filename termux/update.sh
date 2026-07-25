@@ -67,8 +67,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     mkdir -p "$(dirname "$CONFIG_FILE")"
     cat > "$CONFIG_FILE" << 'CONF'
 # Settings for the YouTube podcast downloader.
-# AUDIO_FORMAT: m4a  keep YouTube's AAC stream - no re-encoding, fastest
-#               mp3  re-encode to MP3 - noticeably slower on a phone
+# AUDIO_FORMAT: m4a  YouTube's own audio, saved as-is (default). Best quality,
+#                    no conversion step. Plays in every Android player.
+#               mp3  re-encode to MP3. Older codec, slower, slightly worse.
 #               keep whatever container YouTube served
 AUDIO_FORMAT=m4a
 MAX_EPISODES=3

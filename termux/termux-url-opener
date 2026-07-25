@@ -13,8 +13,9 @@ BASE_DIR="$HOME/storage/shared/Podcasts"
 SCRIPT_DIR="$HOME/youtube_podcasts"
 CONFIG_FILE="$HOME/.config/youtube_podcasts.conf"
 
-# m4a keeps YouTube's own AAC stream, so there is no re-encoding step at all.
-# Set AUDIO_FORMAT=mp3 in the config file if you need MP3 instead.
+# m4a is YouTube's own audio, saved without re-encoding: better quality than
+# MP3 and no conversion step. Set AUDIO_FORMAT=mp3 in the config file to go
+# back to MP3.
 AUDIO_FORMAT="m4a"
 MAX_EPISODES=3
 AUTO_UPDATE=0

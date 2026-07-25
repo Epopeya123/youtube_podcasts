@@ -11,9 +11,11 @@ Episodes are saved as ordinary files under `Internal Storage > Podcasts > <chann
 
 ## Audio format
 
-By default episodes keep YouTube's own AAC audio in an `.m4a` file. Nothing is re-encoded, which is why downloads are quick — converting to MP3 means decoding and re-encoding the whole episode on the phone's CPU. `.m4a` plays in every podcast and music app on Android.
+By default episodes keep YouTube's own audio exactly as sent: AAC in an `.m4a` file.
 
-If you want MP3 anyway, switch it in the app's Settings tab, or set `AUDIO_FORMAT=mp3` in `~/.config/youtube_podcasts.conf`.
+YouTube has no MP3 to give — it serves AAC and Opus. Asking for MP3 means decoding its audio and re-encoding it into an older codec, which is both slower and slightly worse sounding, since you are making a lossy copy of an already-lossy file. Keeping the `.m4a` avoids that entirely. It plays in every music and podcast app on Android.
+
+Existing `.mp3` files keep working and play alongside the new ones. To go back to MP3, use the app's Settings tab or set `AUDIO_FORMAT=mp3` in `~/.config/youtube_podcasts.conf`.
 
 ## Option 1: Termux (Android phone) — Recommended
 

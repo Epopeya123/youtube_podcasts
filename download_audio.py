@@ -39,6 +39,9 @@ AUDIO_EXTS = (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".flac", ".wav",
 THUMB_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 AUDIO_FORMAT_CHOICES = ("m4a", "mp3", "keep")
+# m4a keeps YouTube's own AAC stream byte for byte. MP3 is not something
+# YouTube serves, so asking for it means decoding their audio and re-encoding
+# it into an older, weaker codec - worse quality and a slow extra pass.
 DEFAULT_AUDIO_FORMAT = "m4a"
 
 # Ranged requests. YouTube throttles long single-connection reads hard; asking

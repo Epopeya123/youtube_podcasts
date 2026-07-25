@@ -68,8 +68,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     mkdir -p "$(dirname "$CONFIG_FILE")"
     cat > "$CONFIG_FILE" << 'CONF'
 # Settings for the YouTube podcast downloader.
-# AUDIO_FORMAT: m4a  keep YouTube's AAC stream - no re-encoding, fastest
-#               mp3  re-encode to MP3 - noticeably slower on a phone
+# AUDIO_FORMAT: m4a  YouTube's own audio, saved as-is (default). Best quality,
+#                    no conversion step. Plays in every Android player.
+#               mp3  re-encode to MP3. Older codec, slower, slightly worse.
 #               keep whatever container YouTube served
 AUDIO_FORMAT=m4a
 MAX_EPISODES=3
@@ -116,7 +117,7 @@ echo "  Internal Storage > Podcasts > <channel folder>"
 echo "They are ordinary files, so you can upload them to your own drive,"
 echo "and the app's Downloads tab can play and delete them."
 echo ""
-echo "Audio format is 'm4a' (no re-encoding, fastest). Change it in:"
+echo "Audio format is 'm4a' (YouTube's own audio, no re-encoding). Change in:"
 echo "  $CONFIG_FILE"
 echo ""
 echo "To download episodes right now, run:"
