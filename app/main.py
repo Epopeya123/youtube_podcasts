@@ -250,7 +250,12 @@ MDScreen:
             id: nav
             panel_color: app.theme_cls.primary_color
             selected_color_background: 0, 0, 0, .2
-            text_color_active: 1, 1, 1, 1
+            # NOT 1,1,1,1 - KivyMD 1.2.0 treats exactly that value as "not
+            # set" and substitutes theme_cls.primary_color, which is the same
+            # purple as panel_color, so the selected tab becomes invisible.
+            # An imperceptibly off-white dodges the sentinel.
+            text_color_active: .99, .99, .99, 1
+            text_color_normal: 1, 1, 1, .6
 
             # =============== DOWNLOADS ===============
             MDBottomNavigationItem:
@@ -566,6 +571,11 @@ MDScreen:
                             size_hint_y: None
                             height: dp(56)
 
+                            # KivyMD 1.2.0's switch thumb overhangs its own
+                            # widget by dp(20) when the switch is on, so
+                            # without this the thumb runs off the screen edge.
+                            padding: 0, 0, dp(24), 0
+
                             MDLabel:
                                 text: "Download shared links"
                                 font_style: "Body2"
@@ -581,6 +591,8 @@ MDScreen:
                             adaptive_height: True
                             size_hint_y: None
                             height: dp(56)
+
+                            padding: 0, 0, dp(24), 0
 
                             MDLabel:
                                 text: "Start Termux directly"
@@ -1015,6 +1027,24 @@ class YouTubePodcastApp(MDApp):
                 )
         return episodes
 
+    def _channel_display_names(self):
+        """Map each folder to the channel name the user typed in the Add tab.
+
+        The folder is a sanitised, machine-made string ("AI_News_NateBJones").
+        Showing that in the list is both ugly and long enough to push the
+        duration and size off the end of the line.
+        """
+        names = {}
+        try:
+            for channel in self._read_channels():
+                folder = (channel.get("folder") or "").strip()
+                name = (channel.get("name") or "").strip()
+                if folder and name:
+                    names[folder] = name
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+        return names
+
     def _collect_episodes(self):
         base = self._podcast_dir
         episodes = []
@@ -1023,12 +1053,13 @@ class YouTubePodcastApp(MDApp):
         except Exception:
             return episodes, True  # unreadable -> probably a permission problem
 
+        display_names = self._channel_display_names()
         for folder in folders:
             folder_path = os.path.join(base, folder)
             try:
                 if not os.path.isdir(folder_path):
                     continue
-                episodes.extend(self._scan_folder(folder_path, folder))
+                episodes.extend(self._scan_folder(folder_path, display_names.get(folder, folder)))
             except Exception as e:
                 log_crash(type(e), e, e.__traceback__)
         episodes.sort(key=lambda e: (e.get("downloaded_at") or "", e.get("title") or ""), reverse=True)

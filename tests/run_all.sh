@@ -45,7 +45,7 @@ fi
 status=0
 
 echo "=============================================================="
-echo " 1/2  lint_kivymd  (KivyMD 2.x widgets, unknown names, pyjnius)"
+echo " 1/3  lint_kivymd  (KivyMD 2.x widgets, unknown names, pyjnius)"
 echo "=============================================================="
 "${RUNNER[@]}" "${PY}" "${SCRIPT_DIR}/lint_kivymd.py" 2>/dev/null
 lint_status=$?
@@ -58,13 +58,33 @@ fi
 
 echo
 echo "=============================================================="
-echo " 2/2  pytest  (headless app build, ids, handlers, intents)"
+echo " 2/3  pytest  (headless app build, ids, handlers, intents)"
 echo "=============================================================="
 "${RUNNER[@]}" "${PY}" -m pytest "${SCRIPT_DIR}" -q -p no:cacheprovider "$@"
 pytest_status=$?
 if [ "${pytest_status}" -ne 0 ]; then
     echo ">> PYTEST FAILED"
     status=1
+fi
+
+echo
+echo "=============================================================="
+echo " 3/3  check_layout  (nothing clipped by the screen edge)"
+echo "=============================================================="
+# Deliberately NOT under "${RUNNER[@]}", and with DISPLAY and the mock GL
+# backend cleared: this step needs a real GL context and an X screen tall
+# enough for a phone-shaped window, so it starts its own xvfb at the right
+# size.  Laying out a window taller than the screen silently produces
+# meaningless coordinates.
+if command -v xvfb-run >/dev/null 2>&1; then
+    env -u DISPLAY -u KIVY_GL_BACKEND "${PY}" "${SCRIPT_DIR}/check_layout.py" 2>/dev/null
+    layout_status=$?
+    if [ "${layout_status}" -ne 0 ]; then
+        echo ">> LAYOUT CHECK FAILED"
+        status=1
+    fi
+else
+    echo "skipped: needs xvfb-run for a real GL context" >&2
 fi
 
 echo

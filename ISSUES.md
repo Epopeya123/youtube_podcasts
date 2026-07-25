@@ -1,11 +1,23 @@
 # Open issues — reported from the phone (v3.0.0 APK)
 
 Reported after installing the first v3.0.0 build. Ordered by severity.
-Tick them off here as they land.
+
+| # | Issue | State |
+|---|-------|-------|
+| 1 | Black screen after resuming | **fixed**, needs confirming on the phone |
+| 2 | No 10s skip, no seek | **fixed** |
+| 3 | DOWNLOAD opens the share sheet | **fixed** |
+| 4 | Settings is a wall of text | **fixed** |
+| 5 | Keep vs. listen-and-forget | **open** — needs a decision from the user |
+| 6 | Storage location wording | **fixed** (was never a bug) |
+
+Nothing here is verified on the real device yet: none of it can be, in this
+container. Everything below is verified against tests and rendered
+screenshots, which is a weaker claim.
 
 ---
 
-## 1. Black screen after leaving and returning to the app  🔴 blocker
+## 1. Black screen after leaving and returning to the app  🔴 blocker  — FIXED
 
 Leave the app, come back, and the whole screen is black. The only way out is
 to kill the app from the recents list and start it again from scratch.
@@ -15,36 +27,71 @@ the activity: Kivy's GL context and every texture are lost, so nothing draws.
 `on_pause` returning True is necessary but not sufficient — the textures still
 have to be reloaded on the way back.
 
-Look at: `on_pause`/`on_resume` in `app/main.py`, and whether the canvas needs
-`Window.canvas.ask_update()` / a full reload after resume. Note `load_channels()`
-and `load_episodes()` already run on resume and rebuild widgets; check they are
-not making it worse (or throwing) before the surface is back.
+**Root cause.** Kivy 2.3.1's SDL2 bootstrap answers Android's
+"returned to foreground" by dispatching `on_resume` and *nothing else* — no
+repaint, no GL reload (`window_sdl2.py:266`). Android may hand back a new EGL
+context, so every texture id the app holds is dead. Kivy has both remedies in
+its own tree (`get_context().reload()`, and a redraw pump in
+`kivy/support.py` commented *"after wakeup, we need to redraw more than once,
+otherwise we get a black screen"*) but that hook belongs to the retired pygame
+bootstrap and was never wired up for SDL2.
 
-## 2. No 10-second skip, no seek  🔴 missing feature
+So `Window.canvas.ask_update()` alone — the usual advice — would not have been
+enough: the old code already dirtied the canvas by rebuilding the episode list
+on resume, so frames were plausibly being drawn *and still black*. The texture
+reload is the load-bearing half.
+
+The app made it worse by running `load_channels()` + `load_episodes()`
+synchronously inside SDL's event filter, under one bare `except: pass`.
+
+**Fix.** `on_resume` only schedules. On the first real frame: `reload()` →
+`flag_update_canvas()` → `update_viewport()`, then a 5 fps repaint pump for
+3 s (Kivy's own rate). The library re-read happens 0.5 s later on its own
+frame, so it can neither delay the repaint nor suppress it by throwing.
+`tests/test_lifecycle.py` drives this through the real `WindowSDL._event_filter`;
+14 of its 15 tests fail against the old code.
+
+**Not verified on a device.** No Android, no GPU here — the tests cover the
+flags and callbacks that gate rendering, not pixels. If it still goes black,
+`logcat` around `SDL_APP_DIDENTERFOREGROUND` plus the presence or absence of
+Kivy's `Context: Reloading graphics data...` line separates the remaining causes.
+
+## 2. No 10-second skip, no seek  🔴 missing feature  — FIXED
 
 While playing there is no way to jump forward or back 10 seconds, and no way to
 scrub. For podcasts this is essential — it is the control people reach for most.
 
-Needs: −10s / +10s buttons, a position/duration readout, and ideally a draggable
-progress bar. `android.media.MediaPlayer` has `seekTo`, `getCurrentPosition`
-and `getDuration`; drive the readout off a `Clock` interval and stop it when
-playback stops.
+**Fix.** −10s / +10s buttons, a draggable progress bar, and a `12:04 / 15:47`
+readout driven by a 0.5 s `Clock` interval. The interval is cancelled first
+thing in `_release_player()`, so a tick can never outlive the `MediaPlayer` it
+polls. Completion is detected by polling rather than `setOnCompletionListener`,
+which would need a pyjnius `PythonJavaClass` proxy — the class of thing
+CLAUDE.md records as breaking on device. 39 tests in `tests/test_player.py`.
 
-## 3. Paste + DOWNLOAD opens the Android share sheet  🟠 wrong behaviour
+## 3. Paste + DOWNLOAD opens the Android share sheet  🟠 wrong behaviour  — FIXED
 
 Paste a link in the Add tab, press DOWNLOAD, and Android asks which app to
 share with. The user pasted a link into *this* app and pressed *its* download
 button — being asked to pick an app makes no sense there.
 
-It should just download. The one-tap Termux path (`RUN_COMMAND`) already exists
-in `_run_command_in_termux` but is off by default; `setup.sh` now sets
-`allow-external-apps = true`, so it should work. Make the direct path the
-default and keep the chooser strictly as a fallback when Termux refuses.
+**Root cause.** With `targetSdk 34`, Android 11+ package visibility hides
+`com.termux` from this app entirely, so `resolveService()` returned null and the
+`RUN_COMMAND` intent could never work — it silently fell through to the chooser
+every time. Fixed by declaring `<queries><package android:name='com.termux'/></queries>`
+via `android.extra_manifest_xml` (`app/extra_manifest.xml`).
 
-## 4. Settings tab is a wall of text  🟡 polish
+**Fix.** The direct path is now the default, behind a real pre-flight check
+(`_termux_service_state()` → ready / missing / blocked / unknown); only "ready"
+uses `startForegroundService`, everything else falls back to the chooser, so the
+worst case is exactly today's behaviour and never a hang. The setting key was
+**renamed** `one_tap_termux` → `termux_direct_launch` rather than re-defaulted:
+v3.0.0 already wrote `one_tap_termux: false` into every phone's `settings.json`,
+so a changed default would never have reached the person who reported this.
+24 tests in `tests/test_termux_handoff.py`.
 
-Too much explanation on screen. Cut it down to what someone actually needs to
-decide, and move the reasoning to the README.
+## 4. Settings tab is a wall of text  🟡 polish  — FIXED
+
+Four controls, one short line of help each; the reasoning moved to the README.
 
 ## 5. Two kinds of download: keep vs. listen-and-forget  🟡 feature
 
@@ -74,20 +121,41 @@ write `/storage/emulated/0` or `/sdcard` in UI text or instructions.
 
 ---
 
-## Testing gaps this round exposed
+## Testing gaps this round exposed — and what closed them
 
 The 236-test suite passed while every one of issues 1–4 was present, because it
-only ever *builds* the app and calls methods. It never renders a frame, never
-simulates a pause/resume, and never checks that a user action produces the
+only ever *built* the app and called methods. It never rendered a frame, never
+simulated a pause/resume, and never checked that a user action produced the
 intended effect rather than merely not raising.
+
+Closed:
+
+* **Rendering.** `KIVY_GL_BACKEND=mock` stubs every GL entry point, so
+  `glCompileShader` compiled nothing and `glReadPixels` returned uninitialised
+  framebuffer noise — that, not Mesa, was why screenshots were garbage. Under
+  Xvfb, llvmpipe reports OpenGL 4.5 / GLSL 4.50, which is ample.
+  `tests/screenshot.py` renders five real screens in ~4 s.
+* **Rendering found three more bugs nobody had reported**, all now fixed and
+  guarded by `tests/test_ui_layout.py`: the *selected* bottom-nav tab was
+  invisible (KivyMD 1.2.0 reads `text_color_active: 1,1,1,1` as "not set" and
+  substitutes `primary_color`, which is also `panel_color` — purple on purple);
+  both Settings switch thumbs ran off the right screen edge; and episode rows
+  showed the sanitised folder name (`AI_News_NateBJones`) instead of the channel
+  name the user typed.
+* **Clipping.** `tests/check_layout.py` fails if any control lands off screen,
+  checked at 720×1560 @2.0 and at the reporting phone's real 1080×2400 @2.75.
+  It needs a true GL context, so it runs as its own step in `run_all.sh`.
+* **Lifecycle.** `tests/test_lifecycle.py` drives pause/resume through Kivy's
+  real `WindowSDL._event_filter`.
+* **Behaviour, not "did not raise".** The Termux tests assert DOWNLOAD produces
+  a `RUN_COMMAND` service start and **no** `createChooser`.
+
+Still open:
 
 * **No real Android emulator is possible here** — `/dev/kvm` is absent and the
   CPU exposes no virtualisation flags, so there is nothing to run an AVD on.
   Do not promise emulator screenshots.
-* **Rendered screenshots via xvfb are the fallback** and are worth having, but
-  need a working software GL: as of now Kivy's shaders fail to compile
-  (`Shader: <fragment> failed to compile`) and screenshots come out as noise.
-  Needs a real Mesa/llvmpipe GL context before screenshots mean anything.
-* **Lifecycle needs coverage**: pause → resume must be exercised in tests.
-* **Behavioural assertions needed**, not just "did not raise": pressing DOWNLOAD
-  must produce a download, not a chooser.
+* **No test here can prove pixels reach a real screen**, that pyjnius resolves a
+  Java overload the way it will on device, or that YouTube downloads work — this
+  container's IP is blocked by YouTube (HTTP 403).
+* Rendering is llvmpipe, not the phone's GPU, and the fonts are the CI ones.

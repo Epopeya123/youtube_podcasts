@@ -320,7 +320,9 @@ def test_share_intent_uses_java_string_and_charsequence_cast(app):
     and Intent.createChooser needs cast('java.lang.CharSequence', title)."""
     if "url_input" not in app.root.ids:
         pytest.skip("no url_input field in this build")
-    app.one_tap_termux = False if hasattr(app, "one_tap_termux") else None
+    # Force the chooser route: this test is about the Java types used to build
+    # the share Intent, which the direct RUN_COMMAND path never constructs.
+    app.termux_direct_launch = False
     app.root.ids.url_input.text = "https://youtu.be/dQw4w9WgXcQ"
     harness.recorder.reset()
     app.download_single_video()
