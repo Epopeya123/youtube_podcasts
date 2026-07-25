@@ -233,6 +233,59 @@ def test_refresh_channel_also_skips_the_chooser(app, termux):
                for v in extra_values()), extra_values()
 
 
+def test_background_extra_is_a_boolean_not_a_string(app, termux):
+    """Termux documents RUN_COMMAND_BACKGROUND as a boolean.
+
+    Sent as a String it is the wrong extra type entirely: getBooleanExtra()
+    finds no boolean under that key and returns its default, so the value we
+    thought we set is simply discarded.
+    """
+    termux(service=True)
+    press_download(app)
+
+    extras = {}
+    for _t, method, args, _k in harness.recorder.calls:
+        if method == "putExtra":
+            extras[str(args[0])] = args[1]
+
+    value = extras.get("com.termux.RUN_COMMAND_BACKGROUND")
+    assert value is not None, "the background extra was not sent at all"
+    assert isinstance(value, bool), (
+        f"RUN_COMMAND_BACKGROUND must be a bool, got {type(value).__name__}"
+    )
+    assert value is False, "the download must run in a visible session, not silently"
+
+
+def test_session_action_stays_a_string(app, termux):
+    """The neighbouring extra genuinely IS a String -- do not 'fix' it too."""
+    termux(service=True)
+    press_download(app)
+
+    for _t, method, args, _k in harness.recorder.calls:
+        if method == "putExtra" and str(args[0]) == "com.termux.RUN_COMMAND_SESSION_ACTION":
+            assert isinstance(args[1], harness.FakeJavaObject)
+            return
+    pytest.fail("RUN_COMMAND_SESSION_ACTION was never sent")
+
+
+def test_start_service_is_preferred_over_start_foreground_service(app, termux):
+    """Termux documents startService() for RUN_COMMAND.
+
+    startForegroundService() promises Android that the service will call
+    startForeground() promptly; when it does not, Android 12+ treats that as a
+    violation.  We are always called straight from a button press, so the app
+    is in the foreground and plain startService() is allowed.
+    """
+    termux(service=True)
+    press_download(app)
+
+    starts = [c[1] for c in service_starts()]
+    assert starts, "no service was started at all"
+    assert starts[0] == "startService", (
+        f"first attempt was {starts[0]}, but Termux documents startService"
+    )
+
+
 def test_java_types_on_the_direct_path(app, termux):
     """CLAUDE.md: every Java String argument must be a real java.lang.String."""
     termux(service=True)
@@ -245,6 +298,14 @@ def test_java_types_on_the_direct_path(app, termux):
             continue
         key, value = args
         assert isinstance(key, harness.FakeJavaObject), f"raw str key {key!r} passed to putExtra"
+        if isinstance(value, bool):
+            # A boolean extra must stay a Python bool: pyjnius maps it onto
+            # Java's boolean overload directly.  Wrapping it in a
+            # java.lang.String would make putExtra store a *String*, and the
+            # receiver's getBooleanExtra() would silently fall back to its
+            # default -- which is exactly the bug this rule is meant to catch,
+            # only in the other direction.
+            continue
         if isinstance(value, (list, tuple)):
             assert all(isinstance(v, harness.FakeJavaObject) for v in value), (
                 f"String[] extra contains a raw Python str: {value!r}"

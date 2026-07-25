@@ -17,12 +17,40 @@ import time
 import traceback
 from datetime import datetime, timezone
 
+# Shared storage, so the episodes stay browsable in any file manager and can be
+# uploaded to your own cloud drive.  Defined up here because the crash logger
+# below writes into it, and the crash logger has to be installed before
+# anything else can go wrong.
+PODCAST_DIR_CANDIDATES = (
+    "/storage/emulated/0/Podcasts",
+    "/sdcard/Podcasts",
+    os.path.expanduser("~/storage/shared/Podcasts"),
+    os.path.expanduser("~/Podcasts"),
+)
+
 # === CRASH LOGGING ===
 CRASH_LOG_PATHS = []
 
 
 def setup_crash_logging():
+    """Write the crash log everywhere it might survive AND be readable.
+
+    app_storage_path() is app-private: on Android 11+ neither Termux nor a file
+    manager can open it, so a crash logged only there is a crash nobody can
+    report.  Shared storage is listed first precisely so the log can be read
+    back off the phone without a computer or root.
+    """
     global CRASH_LOG_PATHS
+    # Shared storage only if it is already there: never create a Podcasts
+    # folder just to hold a crash log, and never before storage permission
+    # has been granted.
+    for d in PODCAST_DIR_CANDIDATES:
+        try:
+            if os.path.isdir(d):
+                CRASH_LOG_PATHS.append(os.path.join(d, "crash_log.txt"))
+        except Exception:
+            pass
+
     dirs_to_try = []
     try:
         from android.storage import app_storage_path
@@ -87,15 +115,6 @@ MIME_BY_EXT = {
     ".flac": "audio/flac",
     ".wav": "audio/wav",
 }
-
-# Shared storage, so the episodes stay browsable in any file manager and can be
-# uploaded to your own cloud drive.
-PODCAST_DIR_CANDIDATES = (
-    "/storage/emulated/0/Podcasts",
-    "/sdcard/Podcasts",
-    os.path.expanduser("~/storage/shared/Podcasts"),
-    os.path.expanduser("~/Podcasts"),
-)
 
 # How that folder is named *to the user*.  /storage/emulated/0 and /sdcard are
 # the same thing a file manager calls "Internal storage", and showing the raw
@@ -2094,7 +2113,10 @@ class YouTubePodcastApp(MDApp):
             intent.setAction(String(TERMUX_RUN_COMMAND_ACTION))
             intent.putExtra(String("com.termux.RUN_COMMAND_PATH"), String(TERMUX_URL_OPENER))
             intent.putExtra(String("com.termux.RUN_COMMAND_ARGUMENTS"), [String(payload)])
-            intent.putExtra(String("com.termux.RUN_COMMAND_BACKGROUND"), String("false"))
+            # A *boolean*, per Termux's RUN_COMMAND documentation.  Sent as a
+            # String it is simply the wrong extra type: getBooleanExtra() finds
+            # no boolean and silently returns its default.
+            intent.putExtra(String("com.termux.RUN_COMMAND_BACKGROUND"), False)
             # 0 = switch to a new session and open Termux, so the download is
             # visible on screen rather than happening invisibly.
             intent.putExtra(String("com.termux.RUN_COMMAND_SESSION_ACTION"), String("0"))
@@ -2109,10 +2131,17 @@ class YouTubePodcastApp(MDApp):
             )
 
             activity = PythonActivity.mActivity
+            # Termux documents startService() for RUN_COMMAND, and we are
+            # always called straight from a button press, so the app is in the
+            # foreground and the Android 8+ background-start restriction does
+            # not apply.  startForegroundService() is kept only as a fallback:
+            # it is what works if we are ever called while backgrounded, but as
+            # the *first* choice it hands Android a service that may never call
+            # startForeground(), which Android 12+ then treats as a violation.
             try:
-                activity.startForegroundService(intent)
-            except Exception:
                 activity.startService(intent)
+            except Exception:
+                activity.startForegroundService(intent)
             return True
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
