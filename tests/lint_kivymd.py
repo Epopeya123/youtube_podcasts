@@ -129,7 +129,6 @@ KV_NON_WIDGETS = {
     "None",
     "True",
     "False",
-    "Color",  # graphics instructions resolve through Factory anyway
 }
 
 # Properties that never belong to the widget class itself.
@@ -563,6 +562,37 @@ def check_python_imports(path: Path, tree: ast.AST) -> LintResult:
                             f"cannot import '{alias.name}': {exc}",
                         )
                     )
+
+    # Factory.MDFoo / Factory.get("MDFoo") lookups in Python resolve lazily at
+    # runtime, so a bad name there is invisible until the widget is built.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and _dotted(node.value) == "Factory":
+            name = node.attr
+            if name in ("get", "register", "unregister"):
+                continue
+            if not resolve_widget_name(name)[0]:
+                result.add(
+                    Finding(
+                        str(path),
+                        node.lineno,
+                        "KVMD003",
+                        f"Factory.{name} does not exist in the installed "
+                        f"KivyMD {_kivymd_version()} / Kivy {_kivy_version()}",
+                    )
+                )
+        elif isinstance(node, ast.Call) and _dotted(node.func) == "Factory.get":
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    if not resolve_widget_name(arg.value)[0]:
+                        result.add(
+                            Finding(
+                                str(path),
+                                node.lineno,
+                                "KVMD003",
+                                f"Factory.get('{arg.value}') does not exist in the "
+                                f"installed KivyMD {_kivymd_version()}",
+                            )
+                        )
     return result
 
 

@@ -5,6 +5,9 @@ linter reports each of KVMD001, KVMD002, KVMD003, KVMD004, PYJN001 and LAMB001
 against this file.  It is never imported and never shipped.
 """
 
+import os  # PY101 - never used
+
+from kivy.factory import Factory
 from kivy.lang import Builder
 from kivymd.app import MDApp
 from kivymd.uix.list import ThisListItemDoesNotExist  # KVMD004
@@ -24,11 +27,16 @@ MDScreen:
 
         MDTotallyMadeUpWidget:          # KVMD003 - resolves nowhere
             text: "nope"
+
+        MDLabel:
+            text: "hello"
+            no_such_property: 3         # KVMD101 (warning)
 '''
 
 
 class BadApp(MDApp):
     def build(self):
+        Factory.MDAnotherMadeUpWidget  # KVMD003 - Factory lookup that resolves nowhere
         return Builder.load_string(KV)
 
     def write_manifest(self, resolver, uri, payload):

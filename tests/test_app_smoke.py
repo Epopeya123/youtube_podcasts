@@ -606,4 +606,30 @@ def test_linter_catches_every_seeded_bug():
         assert expected in codes, (
             f"linter missed {expected} in {fixture}; it reported {sorted(codes)}"
         )
+    warn_codes = {f.code for f in result.warnings}
+    for expected in ("KVMD101", "PY101"):
+        assert expected in warn_codes, (
+            f"linter missed warning {expected}; it reported {sorted(warn_codes)}"
+        )
     assert all(f.line > 0 for f in result.errors), "findings must carry a line number"
+    assert not result.ok, "a file full of bugs must make the linter fail"
+
+
+def test_linter_findings_point_at_the_right_lines():
+    """file:line must be usable -- the reported line must contain the name."""
+    fixture = Path(__file__).resolve().parent / "fixtures" / "bad_app.py"
+    lines = fixture.read_text().split("\n")
+    checked = 0
+    for finding in lint_kivymd.lint_file(fixture).errors:
+        if finding.code not in ("KVMD001", "KVMD002", "KVMD003"):
+            continue
+        name = re.search(r"'([A-Za-z_][\w.']*?)'", finding.message)
+        if not name:
+            continue
+        needle = name.group(1).split("(")[0].strip("'")
+        assert needle in lines[finding.line - 1], (
+            f"{finding.code} reported line {finding.line} "
+            f"({lines[finding.line - 1]!r}) but the name {needle!r} is not there"
+        )
+        checked += 1
+    assert checked >= 4, "expected several name findings to line-check"
