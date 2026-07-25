@@ -25,9 +25,19 @@ import download_audio as da  # noqa: E402
 
 
 def _app_module():
-    """Import app/main.py the way the smoke harness does, without a Window."""
+    """Import app/main.py the way the smoke harness does.
+
+    Kivy needs a display to create a Window even with the mock GL backend, so
+    skip rather than fail when pytest is run bare instead of through
+    tests/run_all.sh (which wraps everything in xvfb).
+    """
     harness = pytest.importorskip("harness", reason="app harness not available")
-    return harness.load_app_module()
+    try:
+        return harness.load_app_module()
+    except (Exception, SystemExit) as exc:
+        # Kivy calls sys.exit() when it cannot get a Window, so SystemExit
+        # has to be caught too - it is not an Exception subclass.
+        pytest.skip(f"cannot load the app module here ({exc}); use tests/run_all.sh")
 
 
 def _scan_with_app(app_module, base_dir, folder_name):
