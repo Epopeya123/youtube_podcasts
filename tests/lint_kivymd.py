@@ -776,9 +776,8 @@ def check_lambda_late_binding(path: Path, tree: ast.AST) -> LintResult:
 # -- PY101: unused imports (warning, CLAUDE.md audit item 10) ---------------
 
 
-def check_unused_imports(path: Path, tree: ast.AST) -> LintResult:
+def check_unused_imports(path: Path, tree: ast.AST, blocks=None) -> LintResult:
     result = LintResult()
-    source = path.read_text()
     imported: dict[str, int] = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -793,20 +792,13 @@ def check_unused_imports(path: Path, tree: ast.AST) -> LintResult:
         for child in ast.walk(tree)
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
     }
-    used |= {
-        child.attr for child in ast.walk(tree) if isinstance(child, ast.Attribute)
-    }
-    for child in ast.walk(tree):
-        if isinstance(child, ast.Attribute):
-            used.add(_dotted(child).split(".")[0])
+    # KV strings reference Python-level names too (e.g. dp() inside KV only).
+    kv_text = "\n".join(block.text for block in (blocks or []))
 
-    for name, lineno in imported.items():
+    for name, lineno in sorted(imported.items(), key=lambda kv: kv[1]):
         if name in used:
             continue
-        # KV strings reference names too (e.g. dp() used only inside KV).
-        if re.search(rf"\b{re.escape(name)}\b", source.split("\n", 1)[-1]) and (
-            source.count(name) > 1
-        ):
+        if kv_text and re.search(rf"\b{re.escape(name)}\b", kv_text):
             continue
         result.add(
             Finding(str(path), lineno, "PY101", f"'{name}' imported but never used", "warning")
@@ -860,7 +852,7 @@ def lint_file(path: str | Path) -> LintResult:
     result.extend(check_python_imports(path, tree))
     result.extend(check_bytes_to_stream(path, tree))
     result.extend(check_lambda_late_binding(path, tree))
-    result.extend(check_unused_imports(path, tree))
+    result.extend(check_unused_imports(path, tree, blocks))
     return result
 
 
