@@ -7,15 +7,39 @@ Two halves that work together:
 - **The Android app** — share a YouTube link to it and the download starts. The Downloads tab lists your episodes with their thumbnails, plays them with the artwork on screen, and can delete or export them.
 - **Termux** — does the actual downloading, on a schedule and on demand.
 
-Episodes are saved as ordinary files under `Internal Storage > Podcasts > <channel>`, so you can browse them in any file manager and upload them to your own drive.
+Episodes are saved as ordinary files under `Internal storage > Podcasts > <channel>`, so you can browse them in any file manager and upload them to your own drive.
 
-## Audio format
+## The app's settings
+
+The Settings tab is deliberately terse — one line per choice. The reasoning lives here.
+
+### Audio format — M4A or MP3
 
 By default episodes keep YouTube's own audio exactly as sent: AAC in an `.m4a` file.
 
 YouTube has no MP3 to give — it serves AAC and Opus. Asking for MP3 means decoding its audio and re-encoding it into an older codec, which is both slower and slightly worse sounding, since you are making a lossy copy of an already-lossy file. Keeping the `.m4a` avoids that entirely. It plays in every music and podcast app on Android.
 
 Existing `.mp3` files keep working and play alongside the new ones. To go back to MP3, use the app's Settings tab or set `AUDIO_FORMAT=mp3` in `~/.config/youtube_podcasts.conf`.
+
+### Episodes — where they are, and GRANT FILE ACCESS
+
+Episodes go to `Internal storage > Podcasts > <channel>`, which is shared storage: ordinary files, browsable in any file manager, uploadable to your own drive. The app has to be allowed to read that folder, which on Android 11 and newer means the "Allow access to manage all files" switch — that is what **GRANT FILE ACCESS** opens. Without it the Downloads tab stays empty even though the files are there.
+
+### Download shared links
+
+On: sharing a YouTube link to the app starts the download immediately. Off: the link is only pasted into the Add tab and waits for you to press DOWNLOAD.
+
+### Start Termux directly
+
+On (the default): pressing DOWNLOAD hands the job straight to Termux through its `RUN_COMMAND` service and the download starts — no app chooser, no extra taps. This needs three things, and `termux/setup.sh` plus the app's own manifest set up all of them:
+
+- `allow-external-apps = true` in `~/.termux/termux.properties` (written by `setup.sh`; run `bash ~/youtube_podcasts/termux/update.sh` on a phone set up before this existed),
+- the `com.termux.permission.RUN_COMMAND` permission, granted under Android Settings → Apps → YouTube Podcasts → Additional permissions,
+- Termux visible to the app at all: Android 11+ hides other apps unless they are declared in the manifest's `<queries>` element (`app/extra_manifest.xml`).
+
+Before every download the app asks the package manager whether Termux's service actually resolves, because starting a service that is not there looks like success from the app's side and would leave you with nothing happening. If it does not resolve, the share menu opens instead and the status line says why.
+
+Turn the switch **off** if you would rather pick Termux from the share menu each time. That is also the escape hatch if a download never appears: Termux can accept the request and drop it when `allow-external-apps` is not set, and the app says so on screen a few seconds later.
 
 ## Option 1: Termux (Android phone) — Recommended
 
@@ -45,7 +69,7 @@ bash setup.sh
 
 Saved to your phone's storage at:
 ```
-Internal Storage > Podcasts > <channel folder>
+Internal storage > Podcasts > <channel folder>
 ```
 
 Each episode is an audio file plus a `.jpg` of its thumbnail. Play them in the app's Downloads tab, in any music app, or point **AntennaPod** (free, from F-Droid) at the folder.
@@ -54,7 +78,7 @@ Because they are ordinary files in shared storage, you can upload them to your o
 
 ### Downloading a single video
 
-Share any YouTube link to the **YouTube Podcasts** app and the download starts on its own. You can also paste a link into the app's Add tab.
+Share any YouTube link to the **YouTube Podcasts** app and the download starts on its own. You can also paste a link into the app's Add tab and press DOWNLOAD — that hands the link straight to Termux, with no app chooser in the way (see [Start Termux directly](#start-termux-directly)).
 
 ### Updating
 

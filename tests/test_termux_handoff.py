@@ -23,7 +23,6 @@ import configparser
 import re
 import sys
 import time
-from pathlib import Path
 
 import pytest
 
@@ -31,7 +30,9 @@ import harness
 
 APP_MAIN = harness.APP_MAIN
 REPO_ROOT = harness.REPO_ROOT
-APP_DIR = APP_MAIN.parent
+# The build config always comes from the repo, even when YT_APP_MAIN points the
+# behavioural tests at a copy of the app.
+APP_DIR = REPO_ROOT / "app"
 
 VIDEO_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 RUN_COMMAND_ACTION = "com.termux.RUN_COMMAND"
@@ -123,6 +124,7 @@ def termux(app):
 
 def service_starts() -> list:
     return [c for c in harness.recorder.calls if c[1] in ("startForegroundService", "startService")]
+
 
 def chooser_calls() -> list:
     return harness.recorder.method_calls("createChooser")
