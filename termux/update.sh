@@ -31,7 +31,17 @@ if ! git diff --quiet -- episodes.json 2>/dev/null; then
 fi
 
 echo "[1/4] Pulling latest code..."
-git pull --ff-only
+# Be explicit about the branch: a plain "git pull" fails when the checked-out
+# branch has no upstream configured, and set -e would abort the whole update.
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
+    echo "  Not on a branch; skipping the pull."
+else
+    git pull --ff-only origin "$BRANCH" || {
+        echo "  Could not fast-forward $BRANCH. Fix the checkout by hand, then re-run."
+        exit 1
+    }
+fi
 
 echo "[2/4] Updating yt-dlp..."
 pip install --upgrade --quiet yt-dlp yt-dlp-ejs mutagen || echo "  (pip upgrade skipped)"
