@@ -633,6 +633,8 @@ class YouTubePodcastApp(MDApp):
         # When the last download was handed to Termux (see
         # _watch_for_silent_termux); None once the check has been made.
         self._termux_handoff_at = None
+        # Why the chooser had to be used, in the user's words.
+        self._termux_fallback_reason = "Termux would not start on its own"
         self._podcast_dir = find_podcast_dir()
         self._episodes_lock = threading.Lock()
         # Resume state (see the LIFECYCLE notes below).  _resume_redraw_event is
@@ -1694,9 +1696,15 @@ class YouTubePodcastApp(MDApp):
         (the direct route was unavailable), or None if nothing could be started.
         """
         if self.termux_direct_launch:
-            if self._termux_service_state() == "ready" and self._run_command_in_termux(payload):
+            state = self._termux_service_state()
+            if state == "ready" and self._run_command_in_termux(payload):
                 self._watch_for_silent_termux()
                 return "direct"
+            self._termux_fallback_reason = (
+                "Termux is not installed, or is hidden from this app"
+                if state == "missing"
+                else "Termux would not start on its own"
+            )
             if self._share_to_termux(payload):
                 return "fallback"
             self._report_termux_unreachable()
@@ -1829,13 +1837,12 @@ class YouTubePodcastApp(MDApp):
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
 
-    @staticmethod
-    def _handoff_status(mode, direct, chooser):
+    def _handoff_status(self, mode, direct, chooser):
         """What the status line says, per route the hand-off actually took."""
         if mode == "direct":
             return direct
         if mode == "fallback":
-            return "Termux would not start on its own - pick it from the list."
+            return f"{self._termux_fallback_reason} - pick it from the list."
         return chooser
 
     def _share_to_termux(self, payload):

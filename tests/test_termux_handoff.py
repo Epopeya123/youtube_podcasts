@@ -286,6 +286,9 @@ def test_chooser_when_termux_is_not_installed(app, termux):
     assert manager.package_queries == ["com.termux"]
     assert chooser_calls(), "no Termux and no chooser: a dead end"
     assert app.status_text.strip(), "the app went quiet"
+    assert "not installed" in app.status_text.lower(), (
+        f"the chooser appeared with no explanation: {app.status_text!r}"
+    )
 
 
 def test_fallback_explains_why_a_chooser_appeared(app, termux):
