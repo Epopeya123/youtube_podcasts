@@ -6,13 +6,13 @@ package.name = ytpodcasts
 package.domain = org.epopeya123
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,xml
-version = 2.0.0
+version = 3.0.0
 
 # Dependencies (lightweight - Termux handles downloading)
 requirements = python3,kivy==2.3.1,kivymd==1.2.0,certifi,pyjnius
 
 # Android settings
-android.permissions = INTERNET,READ_MEDIA_AUDIO
+android.permissions = INTERNET,READ_MEDIA_AUDIO,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE,FOREGROUND_SERVICE,com.termux.permission.RUN_COMMAND
 android.api = 34
 android.minapi = 26
 android.ndk = 25b
