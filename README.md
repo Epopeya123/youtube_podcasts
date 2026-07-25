@@ -1,6 +1,19 @@
 # YouTube Podcasts
 
-Automatically downloads audio from [Nate B. Jones' YouTube channel](https://www.youtube.com/@natebjones) (AI News & Strategy Daily) and saves it as MP3 files you can listen to like a podcast.
+Downloads audio from YouTube and saves it to your phone so you can listen to it like a podcast.
+
+Two halves that work together:
+
+- **The Android app** — share a YouTube link to it and the download starts. The Downloads tab lists your episodes with their thumbnails, plays them with the artwork on screen, and can delete or export them.
+- **Termux** — does the actual downloading, on a schedule and on demand.
+
+Episodes are saved as ordinary files under `Internal Storage > Podcasts > <channel>`, so you can browse them in any file manager and upload them to your own drive.
+
+## Audio format
+
+By default episodes keep YouTube's own AAC audio in an `.m4a` file. Nothing is re-encoded, which is why downloads are quick — converting to MP3 means decoding and re-encoding the whole episode on the phone's CPU. `.m4a` plays in every podcast and music app on Android.
+
+If you want MP3 anyway, switch it in the app's Settings tab, or set `AUDIO_FORMAT=mp3` in `~/.config/youtube_podcasts.conf`.
 
 ## Option 1: Termux (Android phone) — Recommended
 
@@ -28,19 +41,28 @@ bash setup.sh
 
 ### Where are my episodes?
 
-MP3 files are saved to your phone's storage at:
+Saved to your phone's storage at:
 ```
-Internal Storage > Podcasts > AI_News_NateBJones
+Internal Storage > Podcasts > <channel folder>
 ```
 
-Play them with any music app, or use **AntennaPod** (free, from F-Droid) to monitor the folder like a podcast feed.
+Each episode is an audio file plus a `.jpg` of its thumbnail. Play them in the app's Downloads tab, in any music app, or point **AntennaPod** (free, from F-Droid) at the folder.
 
-### Updating yt-dlp
+Because they are ordinary files in shared storage, you can upload them to your own cloud drive — either from a file manager, or with the export button in the app's now-playing bar. Deleting an episode in the Downloads tab removes the file from this folder for real.
 
-If downloads stop working, update yt-dlp in Termux:
+### Downloading a single video
+
+Share any YouTube link to the **YouTube Podcasts** app and the download starts on its own. You can also paste a link into the app's Add tab.
+
+### Updating
+
 ```bash
-pip install --upgrade yt-dlp
+bash ~/youtube_podcasts/termux/update.sh
 ```
+
+This pulls the latest code, upgrades yt-dlp, and refreshes the two scripts that live outside the checkout (`~/bin/termux-url-opener` and `~/run_podcast_download.sh`) — a plain `git pull` leaves those stale.
+
+> **Node must be v22 or newer.** yt-dlp uses it to solve YouTube's JavaScript challenges; on an older Node it falls back to weaker clients and downloads get slow. `pkg upgrade nodejs-lts` fixes it.
 
 ## Option 2: GitHub Actions (cloud)
 
@@ -61,6 +83,20 @@ pip install -r requirements.txt
 # Download latest 5 episodes to a custom folder
 python download_audio.py --max-episodes 5 --output-dir ~/Music/NateBJones
 
+# One specific video
+python download_audio.py --url "https://youtu.be/VIDEO_ID" --output-dir ~/Music
+
+# Re-encode to MP3 instead of keeping the original AAC (slower)
+python download_audio.py --url "https://youtu.be/VIDEO_ID" --audio-format mp3
+
 # Generate RSS feed (for GitHub Actions mode)
 python generate_feed.py
+```
+
+## Tests
+
+No Android device needed — the app runs headless, so KivyMD breakage is caught in seconds instead of after a 30-minute APK build.
+
+```bash
+bash tests/run_all.sh
 ```
