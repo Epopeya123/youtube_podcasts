@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 
 # === CRASH LOGGING ===
 CRASH_LOG_PATHS = []
@@ -145,8 +145,13 @@ DEFAULT_SETTINGS = {
     "termux_direct_launch": True,
 }
 
+# Episodes you have not starred are removed this long after they arrived, so
+# the phone does not slowly fill up with things you listened to once.
+CLEANUP_AFTER_DAYS = 30
+
 CHANNELS_FILE = None
 SETTINGS_FILE = None
+KEEP_FILE = None
 
 
 def get_data_dir():
@@ -360,6 +365,12 @@ MDScreen:
                                 on_release: app.stop_playback()
 
                             MDIconButton:
+                                icon: app.keep_icon
+                                theme_text_color: "Custom"
+                                text_color: 1, .8, .3, 1
+                                on_release: app.toggle_keep()
+
+                            MDIconButton:
                                 icon: "export-variant"
                                 on_release: app.export_selected()
 
@@ -558,6 +569,12 @@ MDScreen:
                             theme_text_color: "Hint"
                             adaptive_height: True
 
+                        MDLabel:
+                            text: app.cleanup_help
+                            font_style: "Caption"
+                            theme_text_color: "Hint"
+                            adaptive_height: True
+
                         MDRaisedButton:
                             text: "GRANT FILE ACCESS"
                             on_release: app.request_all_files_access()
@@ -620,8 +637,10 @@ class YouTubePodcastApp(MDApp):
     now_playing_art = StringProperty("")
     now_playing_time = StringProperty("")
     play_icon = StringProperty("play")
+    keep_icon = StringProperty("star-outline")
     format_help = StringProperty("")
     storage_help = StringProperty("")
+    cleanup_help = StringProperty("")
     termux_direct_help = StringProperty("")
     is_downloading = BooleanProperty(False)
     auto_download_on_share = BooleanProperty(True)
@@ -648,6 +667,9 @@ class YouTubePodcastApp(MDApp):
         # Why the chooser had to be used, in the user's words.
         self._termux_fallback_reason = "Termux would not start on its own"
         self._podcast_dir = find_podcast_dir()
+        # Starred episodes, by path relative to the Podcasts folder.  Set here
+        # too so is_kept() is safe before build() has read keep.json.
+        self._kept = set()
         self._episodes_lock = threading.Lock()
         # Resume state (see the LIFECYCLE notes below).  _resume_redraw_event is
         # the Clock interval that keeps asking for a repaint after a wakeup.
@@ -687,18 +709,21 @@ class YouTubePodcastApp(MDApp):
     RESUME_DATA_DELAY = 0.5
 
     def build(self):
-        global CHANNELS_FILE, SETTINGS_FILE
+        global CHANNELS_FILE, SETTINGS_FILE, KEEP_FILE
         try:
             data_dir = get_data_dir()
             os.makedirs(data_dir, exist_ok=True)
             CHANNELS_FILE = os.path.join(data_dir, "channels.json")
             SETTINGS_FILE = os.path.join(data_dir, "settings.json")
+            KEEP_FILE = os.path.join(data_dir, "keep.json")
         except Exception as e:
             CHANNELS_FILE = None
             SETTINGS_FILE = None
+            KEEP_FILE = None
             log_crash(type(e), e, e.__traceback__)
 
         self._load_settings()
+        self._load_keep_list()
         self._disable_strict_mode()
 
         self.theme_cls.theme_style = "Dark"
@@ -731,6 +756,9 @@ class YouTubePodcastApp(MDApp):
             self._handle_android_intent()
         except Exception:
             pass
+        # Once per launch, and only after the list is on screen: an automatic
+        # delete should never be the first thing that happens on startup.
+        self._run_cleanup_in_background()
 
     def on_pause(self):
         """Returning True lets Android background us instead of killing us."""
@@ -900,6 +928,213 @@ class YouTubePodcastApp(MDApp):
         self.auto_download_on_share = bool(self._settings.get("auto_download_on_share", True))
         self.termux_direct_launch = bool(self._settings.get("termux_direct_launch", True))
 
+    # ------------------------------------------------------------------
+    # Starred episodes, and clearing out the ones you did not star
+    #
+    # Everything downloads to Podcasts/<channel> and stays an ordinary file
+    # there, so any app -- a file manager, WhatsApp's attach picker, a cloud
+    # drive -- can reach it.  Starring does not move anything or change how
+    # you get at it; it only decides what survives the cleanup below.
+    # ------------------------------------------------------------------
+
+    def _keep_key(self, path):
+        """Identify an episode by its path relative to the Podcasts folder.
+
+        Relative, because the same card can be mounted at a different absolute
+        path (/sdcard vs /storage/emulated/0) and an absolute key would then
+        silently forget every star the user had set.
+        """
+        try:
+            return os.path.relpath(os.path.abspath(path), os.path.abspath(self._podcast_dir))
+        except Exception:
+            return os.path.basename(path or "")
+
+    def _load_keep_list(self):
+        self._kept = set()
+        if not KEEP_FILE or not os.path.exists(KEEP_FILE):
+            return
+        try:
+            with open(KEEP_FILE, "r") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                self._kept = {str(k) for k in loaded.get("kept", []) if k}
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def _save_keep_list(self):
+        if not KEEP_FILE:
+            return
+        try:
+            tmp = KEEP_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"kept": sorted(self._kept)}, f, indent=2)
+            os.replace(tmp, KEEP_FILE)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def is_kept(self, episode):
+        try:
+            return self._keep_key(episode.get("path", "")) in self._kept
+        except Exception:
+            return False
+
+    def toggle_keep(self):
+        """Star or unstar the selected episode."""
+        episode = self._selected
+        if not episode:
+            safe_snackbar("Select an episode first")
+            return
+        try:
+            key = self._keep_key(episode.get("path", ""))
+            if key in self._kept:
+                self._kept.discard(key)
+                safe_snackbar(f"Not starred - will be cleared after {CLEANUP_AFTER_DAYS} days")
+            else:
+                self._kept.add(key)
+                safe_snackbar("Starred - this one is kept for good")
+            self._save_keep_list()
+            self._refresh_keep_icon()
+            self.load_episodes()
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def _refresh_keep_icon(self):
+        try:
+            self.keep_icon = "star" if (self._selected and self.is_kept(self._selected)) else "star-outline"
+        except Exception:
+            self.keep_icon = "star-outline"
+
+    def _episode_age_days(self, episode, now=None):
+        """How long ago this episode arrived, in days.
+
+        Prefers the manifest's downloaded_at; falls back to the file's mtime
+        for anything downloaded before manifests existed or dropped in by hand.
+        Returns None when neither can be read, which means "do not touch it".
+        """
+        now = now or time.time()
+        stamp = episode.get("downloaded_at") or ""
+        if stamp:
+            try:
+                parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    # The downloader writes local wall-clock time; treat a bare
+                    # stamp as UTC rather than guessing the phone's offset.
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return (now - parsed.timestamp()) / 86400.0
+            except Exception:
+                pass
+        try:
+            return (now - os.path.getmtime(episode["path"])) / 86400.0
+        except Exception:
+            return None
+
+    def _cleanup_baseline(self):
+        """The moment this phone first learned about automatic cleanup.
+
+        Without this, installing the update would delete every episode already
+        older than 30 days the first time the app opened -- a library the user
+        had been collecting, gone before they were ever told the rule existed.
+        Nothing is removed until it has been 30 days since *this* stamp too.
+        """
+        stamp = self._settings.get("cleanup_baseline")
+        if not stamp:
+            stamp = time.time()
+            self._settings["cleanup_baseline"] = stamp
+            self._save_settings()
+        try:
+            return float(stamp)
+        except (TypeError, ValueError):
+            return time.time()
+
+    def cleanup_unstarred(self, now=None):
+        """Delete unstarred episodes older than CLEANUP_AFTER_DAYS.
+
+        Returns (files_removed, bytes_freed).  Deliberately conservative: it
+        touches only audio files inside the Podcasts folder, never a starred
+        one, and never anything whose age it could not establish.
+        """
+        now = now or time.time()
+        baseline = self._cleanup_baseline()
+        grace_days = (now - baseline) / 86400.0
+        if grace_days < CLEANUP_AFTER_DAYS:
+            return 0, 0
+
+        removed = 0
+        freed = 0
+        try:
+            with self._episodes_lock:
+                episodes, unreadable = self._collect_episodes()
+            if unreadable:
+                return 0, 0
+
+            for episode in episodes:
+                if self.is_kept(episode):
+                    continue
+                age = self._episode_age_days(episode, now)
+                if age is None or age < CLEANUP_AFTER_DAYS:
+                    continue
+                path = episode.get("path") or ""
+                if not self._is_inside_library(path) or not path.lower().endswith(AUDIO_EXTS):
+                    continue
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+                if self._remove_episode_files(path):
+                    removed += 1
+                    freed += size
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+        return removed, freed
+
+    def _is_inside_library(self, path):
+        """Guard every automatic delete: never step outside the Podcasts tree."""
+        try:
+            base = os.path.abspath(self._podcast_dir)
+            target = os.path.abspath(path)
+            return os.path.commonpath([base, target]) == base and target != base
+        except Exception:
+            return False
+
+    def _remove_episode_files(self, path):
+        """Delete the audio and its thumbnail sidecar. True if the audio went."""
+        gone = False
+        try:
+            os.remove(path)
+            gone = True
+        except OSError as e:
+            log_crash(type(e), e, e.__traceback__)
+            return False
+        thumb = find_sidecar_thumbnail(path)
+        if thumb and self._is_inside_library(thumb):
+            try:
+                os.remove(thumb)
+            except OSError:
+                pass
+        return gone
+
+    def _run_cleanup_in_background(self):
+        """Cleanup walks the whole library, so keep it off the UI thread."""
+
+        def work():
+            removed, freed = self.cleanup_unstarred()
+            if not removed:
+                return
+
+            def report(_dt):
+                safe_snackbar(
+                    f"Cleared {removed} unstarred episode"
+                    f"{'s' if removed != 1 else ''} ({human_size(freed) or '0 MB'})"
+                )
+                self.load_episodes()
+
+            Clock.schedule_once(report, 0)
+
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
     def _save_settings(self):
         if not SETTINGS_FILE:
             return
@@ -947,6 +1182,9 @@ class YouTubePodcastApp(MDApp):
         else:
             self.format_help = "M4A: YouTube's audio as sent. Faster, better."
         self.storage_help = STORAGE_LOCATION_TEXT
+        self.cleanup_help = (
+            f"Starred episodes are kept. The rest go after {CLEANUP_AFTER_DAYS} days."
+        )
         if self.termux_direct_launch:
             self.termux_direct_help = "Downloads start in Termux without asking."
         else:
@@ -1116,6 +1354,7 @@ class YouTubePodcastApp(MDApp):
                 details = " | ".join(
                     part
                     for part in (
+                        "Starred" if self.is_kept(episode) else "",
                         episode.get("channel", ""),
                         human_duration(episode.get("duration")),
                         human_size(episode.get("filesize")),
@@ -1146,6 +1385,7 @@ class YouTubePodcastApp(MDApp):
             self._selected = episode
             self.now_playing_title = episode.get("title", "")
             self.now_playing_art = episode.get("thumb") or ""
+            self._refresh_keep_icon()
             self._show_now_playing(True)
             self.play_episode(episode)
         except Exception as e:
@@ -1471,6 +1711,45 @@ class YouTubePodcastApp(MDApp):
         # explicit attach/detach to be used from a worker thread at all.
         self._start_export_intent(path)
 
+    def _media_store_uri(self, path):
+        """The content:// URI MediaStore already has for this file, or None.
+
+        Receiving apps cannot open a file:// URI on Android 11+ -- and
+        FLAG_GRANT_READ_URI_PERMISSION does nothing for one, because there is
+        no provider behind it to grant anything.  Episodes live in shared
+        storage and are indexed as audio, so MediaStore usually knows them and
+        can hand out a URI that WhatsApp, Drive and mail will accept.
+        """
+        try:
+            from jnius import autoclass, cast
+
+            MediaStore = autoclass("android.provider.MediaStore$Audio$Media")
+            ContentUris = autoclass("android.content.ContentUris")
+            String = autoclass("java.lang.String")
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+
+            resolver = PythonActivity.mActivity.getContentResolver()
+            collection = MediaStore.EXTERNAL_CONTENT_URI
+            cursor = resolver.query(
+                collection,
+                [String("_id")],
+                String("_data=?"),
+                [String(os.path.abspath(path))],
+                None,
+            )
+            if cursor is None:
+                return None
+            try:
+                if not cursor.moveToFirst():
+                    return None
+                media_id = cursor.getLong(0)
+            finally:
+                cursor.close()
+            return ContentUris.withAppendedId(collection, media_id)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            return None
+
     def _start_export_intent(self, path):
         try:
             from jnius import autoclass, cast
@@ -1483,10 +1762,14 @@ class YouTubePodcastApp(MDApp):
 
             mime = MIME_BY_EXT.get(os.path.splitext(path)[1].lower(), "audio/*")
 
+            # file:// only if MediaStore has never seen the file; it at least
+            # still works for the apps that tolerate it, which is what shipped.
+            stream = self._media_store_uri(path) or Uri.fromFile(File(String(path)))
+
             intent = Intent()
             intent.setAction(Intent.ACTION_SEND)
             intent.setType(String(mime))
-            intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", Uri.fromFile(File(String(path)))))
+            intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", stream))
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 

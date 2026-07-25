@@ -74,7 +74,20 @@ Internal storage > Podcasts > <channel folder>
 
 Each episode is an audio file plus a `.jpg` of its thumbnail. Play them in the app's Downloads tab, in any music app, or point **AntennaPod** (free, from F-Droid) at the folder.
 
-Because they are ordinary files in shared storage, you can upload them to your own cloud drive — either from a file manager, or with the export button in the app's now-playing bar. Deleting an episode in the Downloads tab removes the file from this folder for real.
+Because they are ordinary files in shared storage, you can upload them to your own cloud drive or attach them to a message — from a file manager, from WhatsApp's own attach-file picker, or with the share button in the app's now-playing bar. Deleting an episode in the Downloads tab removes the file from this folder for real.
+
+### Starring: what is kept and what goes away
+
+Every download lands in `Podcasts/<channel>` and stays an ordinary file there. Nothing is ever hidden away somewhere you cannot reach it.
+
+The **star** in the now-playing bar decides what survives:
+
+- **Starred** — kept for good. Nothing removes it but you.
+- **Not starred** — removed automatically 30 days after it arrived, so the phone does not slowly fill with things you listened to once.
+
+Starring does not move the file or change how you get at it. It only marks it.
+
+Two deliberate safety rules: nothing is deleted until the app has been installed for 30 days, so updating never wipes a library you already had; and the cleanup only ever touches audio files inside the `Podcasts` folder.
 
 ### Downloading a single video
 

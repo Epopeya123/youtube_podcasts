@@ -8,7 +8,7 @@ Reported after installing the first v3.0.0 build. Ordered by severity.
 | 2 | No 10s skip, no seek | **fixed** |
 | 3 | DOWNLOAD opens the share sheet | **fixed** |
 | 4 | Settings is a wall of text | **fixed** |
-| 5 | Keep vs. listen-and-forget | **open** — needs a decision from the user |
+| 5 | Keep vs. listen-and-forget | **fixed** |
 | 6 | Storage location wording | **fixed** (was never a bug) |
 
 Nothing here is verified on the real device yet: none of it can be, in this
@@ -93,7 +93,33 @@ so a changed default would never have reached the person who reported this.
 
 Four controls, one short line of help each; the reasoning moved to the README.
 
-## 5. Two kinds of download: keep vs. listen-and-forget  🟡 feature
+## 5. Two kinds of download: keep vs. listen-and-forget  🟡 feature  — FIXED
+
+**Chosen design** (the user picked it): everything downloads to
+`Podcasts/<channel>` and stays an ordinary file there, so a file manager,
+WhatsApp's attach picker and any cloud-drive app can always reach it. A star in
+the now-playing bar marks what to keep; unstarred episodes are removed 30 days
+after they arrived.
+
+Deliberately *not* app-private storage: on Android 11+ `Android/data/...` is
+unreadable by other apps, which would have taken away the one thing the user
+asked for — being able to get at the audio.
+
+Two safety rules, both mutation-tested in `tests/test_keep_cleanup.py`:
+
+* **First-run grace period.** Nothing is deleted until 30 days after the phone
+  first saw this feature. Without it, installing the update would have wiped
+  every episode already older than 30 days the first time the app opened — a
+  library collected over months, gone before the user was told the rule existed.
+* **Library boundary.** Cleanup only touches audio files inside the Podcasts
+  tree, never a starred one, and never one whose age it could not establish.
+
+Also fixed alongside it: the in-app share button built a `file://` URI, which
+receiving apps reject on Android 11+ (`FLAG_GRANT_READ_URI_PERMISSION` grants
+nothing without a provider behind it). It now asks MediaStore for a `content://`
+URI and falls back to the old behaviour only if the file is not indexed.
+
+<details><summary>Original report</summary>
 
 Right now everything is treated as precious and goes to shared storage. The
 user wants a distinction:
@@ -108,7 +134,9 @@ Design question to settle: how does the user pick? Probably a toggle on the
 download action rather than a global setting, since it is a per-episode
 intention.
 
-## 6. Storage location — NOT a bug, but the wording confused the user  ⚪ docs
+</details>
+
+## 6. Storage location — NOT a bug, but the wording confused the user  ⚪ docs  — FIXED
 
 The user believed episodes used to be saved somewhere different from what was
 described. They are not: **`/storage/emulated/0/Podcasts/<folder>` and
