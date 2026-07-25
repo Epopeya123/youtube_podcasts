@@ -5,7 +5,32 @@ YouTube Podcasts — download audio from YouTube videos and listen as podcasts.
 
 Two tools in one repo:
 1. **Termux CLI tool** (`download_audio.py`, `termux/`) — runs on Android phone via Termux, downloads audio via yt-dlp + ffmpeg, scheduled every 6 hours
-2. **Android app** (`app/`) — KivyMD 1.2.0 app built with Buildozer via GitHub Actions. The app is a UI control panel that launches Termux for all downloads (MP3 conversion requires Termux's ffmpeg). Supports multi-channel management with per-channel refresh.
+2. **Android app** (`app/`) — KivyMD 1.2.0 app built with Buildozer via GitHub Actions. The app is a UI control panel that launches Termux for all downloads (Termux has ffmpeg + yt-dlp). Supports multi-channel management, a Downloads tab that plays/deletes episodes, and share-to-download.
+
+## How the two halves talk
+- Termux writes audio **and** a `.episodes.json` manifest into `/sdcard/Podcasts/<channel>/`. Shared storage on purpose: the files stay browsable, uploadable to the user's own drive, and deletable by the app.
+- The app sends Termux a payload string: `<url>|||<folder>|||<format>` or `REFRESH:<channel_url>|||<folder>|||<format>`, parsed by `termux/termux-url-opener`.
+- The app never downloads anything itself; it reads the manifests to build the Downloads tab.
+
+## Download speed (learned the hard way)
+- **One extraction per video.** Metadata extraction is the slow step on a phone (player JS + a JS challenge through Node). The old code called `extract_info` twice per video — once just to read the duration — which roughly doubled the wait. Duration comes from the single download extraction; Shorts get sorted afterwards.
+- **`js_runtimes` must be passed explicitly.** yt-dlp only enables **Deno** by default. Termux ships Node, so without `js_runtimes` yt-dlp logs "No supported JavaScript runtime could be found", falls back to weaker player clients and loses formats. Node must be **v22+** or yt-dlp marks it `(unsupported)`.
+- **m4a costs nothing, MP3 costs a lot — and sounds worse.** YouTube serves AAC and Opus, never MP3, so asking for MP3 is a lossy-to-lossy re-encode. `bestaudio[ext=m4a]` + `preferredcodec: "m4a"` means yt-dlp sees the file is already m4a and **skips ffmpeg entirely**. MP3 forces a full Opus→MP3 decode+encode of the whole episode (~13s CPU for a 16-min episode on x86, far worse on a phone ARM core).
+- **`sleep_interval` only when walking a channel.** It was adding 2-5s to every single-video download for no reason.
+- **Always set `socket_timeout`/`retries`/`http_chunk_size`.** Without a timeout a stalled read hangs forever; `http_chunk_size` (ranged requests) also dodges YouTube's throttling of long single-connection reads.
+- **`EmbedThumbnail` DELETES the thumbnail file** unless you pass `already_have_thumbnail: True`. That is why episodes had no artwork sidecar for the app to show.
+- **Never write `episodes.json` into the checkout on the phone** — it is tracked, so the next `git pull` fails. `resolve_episodes_file()` puts the index next to the audio when the output dir is outside the repo.
+
+## Testing before a 30-minute APK build
+Kivy + KivyMD 1.2.0 run headless in CI/dev containers, so app breakage is catchable in seconds:
+```
+xvfb-run -a -s "-screen 0 1024x768x24" env KIVY_NO_ARGS=1 KIVY_LOG_MODE=PYTHON \
+  KIVY_GL_BACKEND=mock KIVY_AUDIO=mock python3 ...
+```
+- `KIVY_WINDOW=mock` does **not** exist in Kivy 2.3.1 — it aborts with "Unable to get a Window". Use xvfb instead.
+- Kivy hijacks stdout/stderr; without `KIVY_LOG_MODE=PYTHON` tracebacks are invisible.
+- Needs system packages `xvfb` and `libmtdev1`.
+- `bash tests/run_all.sh` runs the linter + suite.
 
 ## Critical rules (learned the hard way)
 - **KivyMD version**: Must use **1.2.0** (not 2.x). Widget names are completely different between versions. TwoLineAvatarIconListItem does NOT work in this build — use TwoLineAvatarListItem.
@@ -19,6 +44,7 @@ Two tools in one repo:
 - **stdout/stderr**: Kivy on Android replaces these with non-file objects. Patch with `open(os.devnull, 'w')` before importing yt-dlp.
 
 ## Audit checklist (run before every push)
+0. `bash tests/run_all.sh` — headless app smoke test + KivyMD linter + downloader tests
 1. Syntax: `py_compile.compile('app/main.py', doraise=True)`
 2. No KivyMD 2.x widgets (MDButton, MDTopAppBarTitle, MDListItem, MDSnackbar with MDSnackbarText)
 3. All methods have try/except
@@ -47,3 +73,9 @@ Two tools in one repo:
 - Branch: main
 - Termux tool: download_audio.py, generate_feed.py, termux/
 - Android app: app/main.py, app/buildozer.spec
+- Tests: tests/ (headless, no device needed)
+
+## Updating the phone
+`git pull` alone reaches `download_audio.py` and `generate_feed.py`. It does **not**
+reach `~/bin/termux-url-opener` or `~/run_podcast_download.sh`, which `setup.sh`
+copies outside the checkout — run `bash ~/youtube_podcasts/termux/update.sh` for those.

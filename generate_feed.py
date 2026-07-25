@@ -31,6 +31,27 @@ PODCAST_LINK = f"https://www.youtube.com/@natebjones"
 ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 ATOM_NS = "http://www.w3.org/2005/Atom"
 
+# Episodes are no longer always MP3 — keeping YouTube's AAC stream avoids a slow
+# re-encode on the phone — so the enclosure type follows the actual file.
+MIME_BY_EXT = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".opus": "audio/opus",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".webm": "audio/webm",
+    ".flac": "audio/flac",
+    ".wav": "audio/wav",
+}
+DEFAULT_MIME = "audio/mpeg"
+
+
+def mime_for(filename):
+    """Pick the enclosure MIME type from the file extension."""
+    return MIME_BY_EXT.get(os.path.splitext(filename or "")[1].lower(), DEFAULT_MIME)
+
 
 def format_duration(seconds):
     """Format duration as HH:MM:SS or MM:SS."""
@@ -59,10 +80,13 @@ def format_pub_date(upload_date):
 
 def generate_feed(episodes):
     """Generate podcast RSS XML from episodes list."""
+    # Without this ElementTree invents ns0/ns1 prefixes; podcast clients want to
+    # see itunes: and atom: on the elements they look for.
+    ET.register_namespace("itunes", ITUNES_NS)
+    ET.register_namespace("atom", ATOM_NS)
+
     rss = Element("rss")
     rss.set("version", "2.0")
-    rss.set("xmlns:itunes", ITUNES_NS)
-    rss.set("xmlns:atom", ATOM_NS)
 
     channel = SubElement(rss, "channel")
 
@@ -106,12 +130,19 @@ def generate_feed(episodes):
             description = description[:4000] + "..."
         SubElement(item, "description").text = description
 
-        # Enclosure (the MP3 file URL)
+        # Enclosure (the audio file URL)
         audio_url = f"{RELEASE_BASE_URL}/{ep['filename']}"
         enclosure = SubElement(item, "enclosure")
         enclosure.set("url", audio_url)
         enclosure.set("length", str(ep.get("filesize", 0)))
-        enclosure.set("type", "audio/mpeg")
+        enclosure.set("type", mime_for(ep.get("filename")))
+
+        # Episode artwork. YouTube's thumbnail URL is stable and needs no
+        # hosting of our own, so podcast apps get cover art for free.
+        video_id = ep.get("id")
+        if video_id:
+            ep_image = SubElement(item, "{%s}image" % ITUNES_NS)
+            ep_image.set("href", f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
 
         # GUID
         guid = SubElement(item, "guid")

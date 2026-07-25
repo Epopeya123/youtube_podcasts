@@ -1,60 +1,110 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Termux URL opener - handles both video URLs and channel refresh commands
-# Place at ~/bin/termux-url-opener
+# Termux URL opener - handles video URLs and channel refresh commands.
+# Installed to ~/bin/termux-url-opener by termux/setup.sh (or termux/update.sh).
+#
+# Accepted input (sent by the app, or by any Share > Termux):
+#   <url>                          download one video into the default folder
+#   <url>|||<folder>               download one video into Podcasts/<folder>
+#   <url>|||<folder>|||<format>    ... and force m4a / mp3 / keep
+#   REFRESH:<channel_url>          fetch that channel's latest episodes
+#   REFRESH:<channel_url>|||<folder>|||<format>
 
-INPUT="$1"
 BASE_DIR="$HOME/storage/shared/Podcasts"
 SCRIPT_DIR="$HOME/youtube_podcasts"
+CONFIG_FILE="$HOME/.config/youtube_podcasts.conf"
+
+# m4a is YouTube's own audio, saved without re-encoding: better quality than
+# MP3 and no conversion step. Set AUDIO_FORMAT=mp3 in the config file to go
+# back to MP3.
+AUDIO_FORMAT="m4a"
+MAX_EPISODES=3
+AUTO_UPDATE=0
+
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+[ -n "$PODCAST_AUDIO_FORMAT" ] && AUDIO_FORMAT="$PODCAST_AUDIO_FORMAT"
+
+INPUT="$1"
 
 echo "================================================"
 echo "  YouTube Audio Downloader"
 echo "================================================"
 echo ""
 
-cd "$SCRIPT_DIR" 2>/dev/null || cd "$HOME"
+cd "$SCRIPT_DIR" 2>/dev/null || cd "$HOME" || exit 1
 
-# Check if this is a channel refresh command (format: "REFRESH:channel_url:folder_name")
-if echo "$INPUT" | grep -q "^REFRESH:"; then
-    CHANNEL_URL=$(echo "$INPUT" | cut -d':' -f2-)
-    FOLDER_NAME=$(echo "$CHANNEL_URL" | sed 's|.*/@@*||' | sed 's|[^a-zA-Z0-9_-]|_|g')
-    OUTPUT_DIR="$BASE_DIR/$FOLDER_NAME"
+if [ "$AUTO_UPDATE" = "1" ] && [ -d "$SCRIPT_DIR/.git" ]; then
+    echo "Checking for updates..."
+    git -C "$SCRIPT_DIR" pull --quiet --ff-only 2>/dev/null || echo "  (update skipped)"
+fi
+
+# --- Split off the optional |||folder|||format suffix -------------------------
+FOLDER=""
+case "$INPUT" in
+    *"|||"*)
+        TARGET="${INPUT%%|||*}"
+        REST="${INPUT#*|||}"
+        case "$REST" in
+            *"|||"*)
+                FOLDER="${REST%%|||*}"
+                AUDIO_FORMAT="${REST#*|||}"
+                ;;
+            *) FOLDER="$REST" ;;
+        esac
+        ;;
+    *) TARGET="$INPUT" ;;
+esac
+
+case "$AUDIO_FORMAT" in
+    m4a|mp3|keep) ;;
+    *) echo "Unknown format '$AUDIO_FORMAT', using m4a."; AUDIO_FORMAT="m4a" ;;
+esac
+
+# --- Channel refresh or single video? ----------------------------------------
+if [ "${TARGET#REFRESH:}" != "$TARGET" ]; then
+    CHANNEL_URL="${TARGET#REFRESH:}"
+    if [ -z "$FOLDER" ]; then
+        # youtube.com/@natebjones -> natebjones
+        FOLDER=$(printf '%s' "$CHANNEL_URL" | sed 's|.*/@||; s|/.*||; s|[^a-zA-Z0-9_-]|_|g')
+        [ -z "$FOLDER" ] && FOLDER="Channel"
+    fi
+    OUTPUT_DIR="$BASE_DIR/$FOLDER"
     mkdir -p "$OUTPUT_DIR"
 
     echo "Refreshing channel: $CHANNEL_URL"
-    echo "Saving to: $OUTPUT_DIR"
+    echo "Saving to:          $OUTPUT_DIR"
+    echo "Audio format:       $AUDIO_FORMAT"
     echo ""
 
-    python download_audio.py --max-episodes 3 --output-dir "$OUTPUT_DIR" 2>&1
+    python download_audio.py \
+        --channel-url "$CHANNEL_URL" \
+        --max-episodes "$MAX_EPISODES" \
+        --audio-format "$AUDIO_FORMAT" \
+        --output-dir "$OUTPUT_DIR" 2>&1
+    STATUS=$?
 else
-    # Regular video URL
-    URL="$INPUT"
-
-    # Check if a folder name is appended (format: "URL|||folder_name")
-    if echo "$INPUT" | grep -q "|||"; then
-        URL=$(echo "$INPUT" | cut -d'|' -f1-3 | sed 's/|||$//')
-        URL=$(echo "$INPUT" | sed 's/|||.*//')
-        FOLDER_NAME=$(echo "$INPUT" | sed 's/.*|||//')
-    else
-        FOLDER_NAME="General"
-    fi
-
-    OUTPUT_DIR="$BASE_DIR/$FOLDER_NAME"
+    [ -z "$FOLDER" ] && FOLDER="General"
+    OUTPUT_DIR="$BASE_DIR/$FOLDER"
     mkdir -p "$OUTPUT_DIR"
 
-    echo "URL: $URL"
-    echo "Saving to: $OUTPUT_DIR"
+    echo "URL:          $TARGET"
+    echo "Saving to:    $OUTPUT_DIR"
+    echo "Audio format: $AUDIO_FORMAT"
     echo ""
 
-    python download_audio.py --url "$URL" --output-dir "$OUTPUT_DIR" 2>&1
+    python download_audio.py \
+        --url "$TARGET" \
+        --audio-format "$AUDIO_FORMAT" \
+        --output-dir "$OUTPUT_DIR" 2>&1
+    STATUS=$?
 fi
 
-STATUS=$?
 echo ""
 if [ $STATUS -eq 0 ]; then
-    echo "Done! Check your Podcasts folder."
+    echo "Done! Saved in Podcasts/$FOLDER - open the app's Downloads tab to play."
 else
     echo "Something went wrong. Check the error above."
 fi
 echo ""
 echo "Press Enter to close..."
-read
+read -r _
