@@ -26,6 +26,11 @@ p4a.bootstrap = sdl2
 # Android intent filters for receiving shared URLs
 android.manifest.intent_filters = intent_filters.xml
 
+# <queries> for com.termux. Android 11+ hides every other package from us
+# unless it is declared here, and a hidden Termux makes the RUN_COMMAND intent
+# (the no-chooser download path) fail silently.
+android.extra_manifest_xml = ./extra_manifest.xml
+
 fullscreen = 0
 android.presplash_color = #1a1a2e
 orientation = portrait

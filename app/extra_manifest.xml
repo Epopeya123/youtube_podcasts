@@ -1,0 +1,15 @@
+<!-- Written verbatim inside <manifest> in AndroidManifest.xml by buildozer's
+     android.extra_manifest_xml option.
+
+     targetSdk is 34, and since Android 11 an app can only see the packages it
+     declares an interest in.  Without this element the package manager hides
+     Termux from us: resolveService() returns null, the RUN_COMMAND intent does
+     nothing, and pressing DOWNLOAD would always fall back to the share sheet.
+     github.com/termux/termux-app/wiki/Termux-Libraries#target-sdk-30-package-visibility
+
+     Single-quoted attribute (valid XML): buildozer interpolates this file into
+     a shell command wrapped in double quotes, without escaping anything, so a
+     double quote here would end that string and split the argument. -->
+<queries>
+    <package android:name='com.termux' />
+</queries>

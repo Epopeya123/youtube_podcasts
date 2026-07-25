@@ -3,8 +3,9 @@ Version 3.0.0 - Downloads tab with artwork, in-app player, share-to-download
 
 The app is a control panel: Termux does the downloading (it has ffmpeg and
 yt-dlp), and writes the audio plus a .episodes.json manifest into shared
-storage under /sdcard/Podcasts/<channel>/. This app reads those folders, so
-the files stay ordinary files you can browse, upload elsewhere, or delete.
+storage - "Internal storage > Podcasts > <channel>" in a file manager. This
+app reads those folders, so the files stay ordinary files you can browse,
+upload elsewhere, or delete.
 """
 
 import json
@@ -12,6 +13,7 @@ import os
 import re
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime
 
@@ -95,17 +97,52 @@ PODCAST_DIR_CANDIDATES = (
     os.path.expanduser("~/Podcasts"),
 )
 
+# How that folder is named *to the user*.  /storage/emulated/0 and /sdcard are
+# the same thing a file manager calls "Internal storage", and showing the raw
+# path once had the user believing the download location had changed when it
+# had not.  Nothing user-facing may print a filesystem path.
+STORAGE_LOCATION_TEXT = "Internal storage > Podcasts > <channel>"
+
 YOUTUBE_URL_RE = re.compile(
     r"https?://(?:www\.|m\.)?(?:youtube\.com/\S+|youtu\.be/\S+)", re.IGNORECASE
 )
 
 TERMUX_URL_OPENER = "/data/data/com.termux/files/home/bin/termux-url-opener"
 
+# Termux's RUN_COMMAND service: the download starts with no app chooser in
+# sight.  It needs three things on the phone, none of which this app can set:
+# the com.termux.permission.RUN_COMMAND permission (declared in buildozer.spec
+# and granted by the user), `allow-external-apps = true` in termux.properties
+# (termux/setup.sh writes it), and - because targetSdk is 30+ - com.termux in
+# the manifest's <queries> element, or the package manager hides Termux from us
+# entirely.  See app/extra_manifest.xml.
+TERMUX_PACKAGE = "com.termux"
+TERMUX_RUN_COMMAND_SERVICE = "com.termux.app.RunCommandService"
+TERMUX_RUN_COMMAND_ACTION = "com.termux.RUN_COMMAND"
+# Termux accepts the intent and then opens its own window, which pushes this app
+# into the background.  If that has not happened this many seconds later,
+# nothing came up and the user is told what to do about it.
+TERMUX_SILENT_AFTER = 12.0
+
+# Player. SKIP_MS is the classic podcast jump; PROGRESS_TICK drives the
+# position readout and the scrub bar (twice a second keeps the bar smooth
+# without polling the MediaPlayer hard).
+SKIP_MS = 10000
+PROGRESS_TICK = 0.5
+# MediaPlayer has no completion callback here (a Java listener would need a
+# pyjnius proxy class), so completion is detected by polling: stopped, and
+# within this much of the end.  One tick's worth of slack covers the gap
+# between the last position we read and the real end of the file.
+PLAYBACK_END_SLACK_MS = 1500
+
 DEFAULT_SETTINGS = {
     "audio_format": "m4a",
     "default_folder": "General",
     "auto_download_on_share": True,
-    "one_tap_termux": False,
+    # Deliberately a new key rather than a new default for "one_tap_termux":
+    # phones that already ran v3.0.0 have the old key saved as false, and a
+    # changed default would never reach them.
+    "termux_direct_launch": True,
 }
 
 CHANNELS_FILE = None
@@ -149,6 +186,25 @@ def human_duration(seconds):
     if seconds <= 0:
         return ""
     hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def format_clock(milliseconds):
+    """Milliseconds -> '12:04' / '1:01:11'.  Never raises, never returns ''.
+
+    Unlike human_duration() this is for a *live* readout, so 0 has to render as
+    '0:00' rather than disappearing.
+    """
+    try:
+        total = int(milliseconds or 0) // 1000
+    except (TypeError, ValueError):
+        total = 0
+    if total < 0:
+        total = 0
+    hours, rem = divmod(total, 3600)
     minutes, secs = divmod(rem, 60)
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
@@ -208,62 +264,105 @@ MDScreen:
                     # --- Now playing ---
                     MDCard:
                         id: now_playing_card
-                        orientation: "horizontal"
+                        orientation: "vertical"
                         size_hint_y: None
                         height: dp(0)
                         opacity: 0
                         disabled: True
                         padding: dp(8)
-                        spacing: dp(10)
+                        spacing: dp(4)
                         md_bg_color: app.theme_cls.bg_darkest
                         radius: [dp(10),]
 
-                        Image:
-                            id: now_playing_art
-                            source: app.now_playing_art
-                            fit_mode: "cover"
-                            size_hint_x: None
-                            width: dp(104)
-
+                        # Artwork + title/status
                         MDBoxLayout:
-                            orientation: "vertical"
-                            spacing: dp(2)
+                            orientation: "horizontal"
+                            spacing: dp(10)
+                            size_hint_y: None
+                            height: dp(72)
 
-                            MDLabel:
-                                text: app.now_playing_title
-                                font_style: "Subtitle2"
-                                shorten: True
-                                shorten_from: "right"
-                                max_lines: 2
-
-                            MDLabel:
-                                text: app.now_playing_status
-                                font_style: "Caption"
-                                theme_text_color: "Hint"
-                                adaptive_height: True
+                            Image:
+                                id: now_playing_art
+                                source: app.now_playing_art
+                                fit_mode: "cover"
+                                size_hint_x: None
+                                width: dp(72)
 
                             MDBoxLayout:
-                                orientation: "horizontal"
-                                spacing: dp(4)
-                                adaptive_height: True
+                                orientation: "vertical"
+                                spacing: dp(2)
 
-                                MDIconButton:
-                                    icon: app.play_icon
-                                    on_release: app.toggle_play()
+                                MDLabel:
+                                    text: app.now_playing_title
+                                    font_style: "Subtitle2"
+                                    shorten: True
+                                    shorten_from: "right"
+                                    max_lines: 2
 
-                                MDIconButton:
-                                    icon: "stop"
-                                    on_release: app.stop_playback()
+                                MDLabel:
+                                    text: app.now_playing_status
+                                    font_style: "Caption"
+                                    theme_text_color: "Hint"
 
-                                MDIconButton:
-                                    icon: "export-variant"
-                                    on_release: app.export_selected()
+                        # Scrub bar + "12:04 / 15:47" readout
+                        MDBoxLayout:
+                            orientation: "horizontal"
+                            spacing: dp(4)
+                            size_hint_y: None
+                            height: dp(32)
 
-                                MDIconButton:
-                                    icon: "delete"
-                                    theme_text_color: "Custom"
-                                    text_color: 0.9, 0.35, 0.35, 1
-                                    on_release: app.confirm_delete_selected()
+                            MDSlider:
+                                id: progress_slider
+                                min: 0
+                                max: 1
+                                value: 0
+                                hint: False
+                                show_off: False
+                                on_active: app.on_seek_active(self.active)
+
+                            MDLabel:
+                                # adaptive_width, not a fixed one: "1:04:12 /
+                                # 1:23:45" must not be clipped, and an empty
+                                # readout must not steal room from the bar.
+                                id: now_playing_time_label
+                                text: app.now_playing_time
+                                font_style: "Caption"
+                                theme_text_color: "Hint"
+                                halign: "right"
+                                valign: "center"
+                                adaptive_width: True
+
+                        # Transport
+                        MDBoxLayout:
+                            orientation: "horizontal"
+                            size_hint_y: None
+                            height: dp(48)
+
+                            MDIconButton:
+                                icon: "rewind-10"
+                                on_release: app.skip_back()
+
+                            MDIconButton:
+                                icon: app.play_icon
+                                on_release: app.toggle_play()
+
+                            MDIconButton:
+                                icon: "fast-forward-10"
+                                on_release: app.skip_forward()
+
+                            MDIconButton:
+                                icon: "stop"
+                                on_release: app.stop_playback()
+
+                            MDIconButton:
+                                icon: "export-variant"
+                                on_release: app.export_selected()
+
+                            MDIconButton:
+                                icon: "delete"
+                                theme_text_color: "Custom"
+                                text_color: 0.9, 0.35, 0.35, 1
+                                on_release: app.confirm_delete_selected()
 
                     MDBoxLayout:
                         orientation: "horizontal"
@@ -418,12 +517,6 @@ MDScreen:
                             font_style: "Subtitle1"
                             adaptive_height: True
 
-                        MDLabel:
-                            text: app.format_help
-                            font_style: "Caption"
-                            theme_text_color: "Hint"
-                            adaptive_height: True
-
                         MDBoxLayout:
                             orientation: "horizontal"
                             spacing: dp(8)
@@ -432,7 +525,7 @@ MDScreen:
                             height: dp(44)
 
                             MDRaisedButton:
-                                text: "M4A (FAST)"
+                                text: "M4A"
                                 on_release: app.set_audio_format("m4a")
                                 size_hint_x: 0.5
 
@@ -441,10 +534,16 @@ MDScreen:
                                 on_release: app.set_audio_format("mp3")
                                 size_hint_x: 0.5
 
+                        MDLabel:
+                            text: app.format_help
+                            font_style: "Caption"
+                            theme_text_color: "Hint"
+                            adaptive_height: True
+
                         MDSeparator:
 
                         MDLabel:
-                            text: "Where your episodes are saved"
+                            text: "Episodes"
                             font_style: "Subtitle1"
                             adaptive_height: True
 
@@ -468,7 +567,7 @@ MDScreen:
                             height: dp(56)
 
                             MDLabel:
-                                text: "Download when a link is shared"
+                                text: "Download shared links"
                                 font_style: "Body2"
 
                             MDSwitch:
@@ -484,17 +583,17 @@ MDScreen:
                             height: dp(56)
 
                             MDLabel:
-                                text: "One-tap Termux launch (skip chooser)"
+                                text: "Start Termux directly"
                                 font_style: "Body2"
 
                             MDSwitch:
-                                id: one_tap_switch
-                                active: app.one_tap_termux
-                                on_active: app.set_one_tap(self.active)
+                                id: termux_direct_switch
+                                active: app.termux_direct_launch
+                                on_active: app.set_termux_direct(self.active)
                                 pos_hint: {"center_y": .5}
 
                         MDLabel:
-                            text: app.one_tap_help
+                            text: app.termux_direct_help
                             font_style: "Caption"
                             theme_text_color: "Hint"
                             adaptive_height: True
@@ -507,30 +606,71 @@ class YouTubePodcastApp(MDApp):
     now_playing_title = StringProperty("")
     now_playing_status = StringProperty("")
     now_playing_art = StringProperty("")
+    now_playing_time = StringProperty("")
     play_icon = StringProperty("play")
     format_help = StringProperty("")
     storage_help = StringProperty("")
-    one_tap_help = StringProperty(
-        "Needs 'allow-external-apps = true' in Termux. Falls back to the share "
-        "menu if Termux refuses."
-    )
+    termux_direct_help = StringProperty("")
     is_downloading = BooleanProperty(False)
     auto_download_on_share = BooleanProperty(True)
-    one_tap_termux = BooleanProperty(False)
+    termux_direct_launch = BooleanProperty(True)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._player = None
         self._playing_path = None
+        # Player state. _progress_event is the Clock interval driving the
+        # readout; it must never outlive self._player (a tick against a
+        # released MediaPlayer crashes the app).
+        self._progress_event = None
+        self._duration_ms = 0
+        self._seeking = False
         self._selected = None
         self._episodes = []
         self._settings = dict(DEFAULT_SETTINGS)
         self._handled_urls = set()
         self._dialog = None
+        # When the last download was handed to Termux (see
+        # _watch_for_silent_termux); None once the check has been made.
+        self._termux_handoff_at = None
         self._podcast_dir = find_podcast_dir()
         self._episodes_lock = threading.Lock()
+        # Resume state (see the LIFECYCLE notes below).  _resume_redraw_event is
+        # the Clock interval that keeps asking for a repaint after a wakeup.
+        self._paused = False
+        self._resume_redraw_event = None
+        self._resume_redraws_left = 0
 
     # === LIFECYCLE ===
+    #
+    # Coming back from the background used to leave the whole screen black
+    # until the app was force-stopped.  Android destroys the SDL/EGL surface
+    # whenever the activity is backgrounded, and Kivy 2.3.1's SDL2 path does
+    # nothing to recover from it:
+    #
+    #   * WindowSDL._event_filter() handles 'app_didenterforeground' by
+    #     dispatching on_resume and nothing else -- no repaint, no reload.
+    #   * WindowBase.create_window() is where Kivy reloads GL resources after a
+    #     window is recreated (get_context().reload()), but on Android it is
+    #     unbound after the first call (`if platform in ('android'):
+    #     self._unbind_create_window()`), so it never runs a second time.
+    #   * EventLoop.idle() only paints when `window.canvas.needs_redraw` is set,
+    #     and on the way back nothing marks the canvas dirty -- so the brand new
+    #     (and therefore undefined, i.e. black) EGL surface is never drawn into.
+    #
+    # Both halves of the fix below are Kivy's own remedies; they simply were
+    # never wired up for the SDL2 bootstrap.  Everything is deferred to the
+    # Clock because on_resume is dispatched from inside SDL's event filter,
+    # before the mainloop is running again and before Android has necessarily
+    # handed SDL the replacement surface.
+
+    # Kivy's android hook (kivy/support.py) repaints at 5 fps for 5 seconds
+    # after a wakeup: "after wakeup, we need to redraw more than once,
+    # otherwise we get a black screen".  Same rate, shorter tail.
+    RESUME_REDRAW_HZ = 5.0
+    RESUME_REDRAW_SECONDS = 3.0
+    # How long to wait before re-reading the library, so the repaint goes first.
+    RESUME_DATA_DELAY = 0.5
 
     def build(self):
         global CHANNELS_FILE, SETTINGS_FILE
@@ -579,16 +719,141 @@ class YouTubePodcastApp(MDApp):
             pass
 
     def on_pause(self):
+        """Returning True lets Android background us instead of killing us."""
+        self._paused = True
+        try:
+            self._cancel_resume_redraw()
+        except Exception:
+            pass
         return True
 
     def on_resume(self):
+        """Dispatched from inside SDL's event filter: schedule, never work.
+
+        Anything done here runs before the mainloop is going again and possibly
+        before the new surface exists -- including any texture upload, which
+        would land on a dead GL context.  So the only job is to book a callback
+        for the first real frame.
+        """
+        self._paused = False
         try:
-            self.load_channels()
-            self.load_episodes()
+            Clock.schedule_once(self._restore_after_resume, 0)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            # Clock unusable (should not happen): better inline than black.
+            self._restore_after_resume()
+
+    def _restore_after_resume(self, *_dt):
+        """First frame back: rebuild GL state, repaint, then re-read the disk."""
+        try:
+            self._reload_gl_state()
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+        try:
+            self._start_resume_redraw()
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+        # The disk walk and widget rebuild go last, on their own frame: they
+        # must never delay the repaint, and must never be able to stop it by
+        # raising.  (They used to be the whole of on_resume.)
+        try:
+            Clock.schedule_once(self._reload_data_after_resume, self.RESUME_DATA_DELAY)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            self._reload_data_after_resume()
+
+    def _reload_gl_state(self):
+        """Re-upload every texture, shader and VBO, and re-issue the viewport.
+
+        This is what WindowBase.create_window() does for a recreated window;
+        Android never reaches that code, so we do it here.  It is the call that
+        drives Kivy's reload observers, which is how artwork (textures with a
+        source) and every label and icon (textures with a fill callback) get
+        themselves back onto a GL context that may be brand new.
+        """
+        try:
+            from kivy.core.window import Window
+            from kivy.graphics.context import get_context
+        except Exception:
+            return
+        try:
+            get_context().reload()
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+        # Each of these is useful on its own, so none may block the others.
+        for step in (
+            lambda: get_context().flag_update_canvas(),
+            lambda: Window.update_viewport(),
+            lambda: Window.canvas.ask_update(),
+        ):
+            try:
+                step()
+            except Exception:
+                pass
+
+    def _start_resume_redraw(self):
+        """Ask for a repaint now, and keep asking for a few seconds.
+
+        One ask_update() is not enough.  Android hands SDL the replacement
+        surface some frames after onResume, and that surface is double
+        buffered, so a single frame only fills one of the two buffers.
+        """
+        self._resume_redraws_left = max(
+            1, int(self.RESUME_REDRAW_SECONDS * self.RESUME_REDRAW_HZ)
+        )
+        self._cancel_resume_redraw()
+        if self._ask_redraw() is False:
+            return
+        try:
+            self._resume_redraw_event = Clock.schedule_interval(
+                self._ask_redraw, 1.0 / self.RESUME_REDRAW_HZ
+            )
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def _ask_redraw(self, *_dt):
+        """Mark the window canvas dirty so EventLoop.idle() actually paints."""
+        try:
+            from kivy.core.window import Window
+
+            Window.canvas.ask_update()
+        except Exception:
+            return False
+        self._resume_redraws_left -= 1
+        if self._paused or self._resume_redraws_left <= 0:
+            self._resume_redraw_event = None
+            return False  # unschedules the interval
+        return True
+
+    def _cancel_resume_redraw(self):
+        event, self._resume_redraw_event = self._resume_redraw_event, None
+        if event is not None:
+            try:
+                event.cancel()
+            except Exception:
+                pass
+
+    def _reload_data_after_resume(self, *_dt):
+        """Re-read the library, once the surface is safely back."""
+        if self._paused:  # backgrounded again before this fired
+            return
+        for step in (self.load_channels, self.load_episodes):
+            try:
+                step()
+            except Exception as e:
+                log_crash(type(e), e, e.__traceback__)
+        try:
+            from kivy.core.window import Window
+
+            Window.canvas.ask_update()
         except Exception:
             pass
 
     def on_stop(self):
+        try:
+            self._cancel_resume_redraw()
+        except Exception:
+            pass
         self.stop_playback()
 
     def _disable_strict_mode(self):
@@ -616,8 +881,10 @@ class YouTubePodcastApp(MDApp):
                 data = {}
         self._settings = dict(DEFAULT_SETTINGS)
         self._settings.update(data)
+        # v3.0.0 wrote this key with a false default nobody ever chose.
+        self._settings.pop("one_tap_termux", None)
         self.auto_download_on_share = bool(self._settings.get("auto_download_on_share", True))
-        self.one_tap_termux = bool(self._settings.get("one_tap_termux", False))
+        self.termux_direct_launch = bool(self._settings.get("termux_direct_launch", True))
 
     def _save_settings(self):
         if not SETTINGS_FILE:
@@ -649,36 +916,27 @@ class YouTubePodcastApp(MDApp):
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
 
-    def set_one_tap(self, active):
+    def set_termux_direct(self, active):
         try:
-            self.one_tap_termux = bool(active)
-            self._settings["one_tap_termux"] = bool(active)
+            self.termux_direct_launch = bool(active)
+            self._settings["termux_direct_launch"] = bool(active)
             self._save_settings()
+            self._refresh_help_text()
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
 
     def _refresh_help_text(self):
+        """One line per setting: enough to choose, no more. (README has the why.)"""
         fmt = self._settings.get("audio_format", "m4a")
         if fmt == "mp3":
-            self.format_help = (
-                "Currently: MP3.\n"
-                "YouTube has no MP3 to give, so its audio gets decoded and "
-                "re-encoded into an older codec. Slightly worse sound, and the "
-                "conversion is the slowest part of a download."
-            )
+            self.format_help = "MP3: re-encoded on the phone. Slower, slightly worse."
         else:
-            self.format_help = (
-                "Currently: M4A.\n"
-                "YouTube's own audio, saved exactly as sent - nothing is "
-                "re-encoded, so it sounds better than MP3 and downloads faster. "
-                "Plays in every Android music and podcast app."
-            )
-        self.storage_help = (
-            f"{self._podcast_dir}/<channel>\n"
-            "These are ordinary files - browse them in any file manager and "
-            "upload them to your own drive. Deleting an episode here removes "
-            "the file from this folder too."
-        )
+            self.format_help = "M4A: YouTube's audio as sent. Faster, better."
+        self.storage_help = STORAGE_LOCATION_TEXT
+        if self.termux_direct_launch:
+            self.termux_direct_help = "Downloads start in Termux without asking."
+        else:
+            self.termux_direct_help = "You pick Termux from the share menu each time."
 
     # === EPISODE LIBRARY ===
 
@@ -863,11 +1121,17 @@ class YouTubePodcastApp(MDApp):
     def _show_now_playing(self, visible):
         try:
             card = self.root.ids.now_playing_card
-            card.height = dp(120) if visible else dp(0)
+            card.height = dp(180) if visible else dp(0)
             card.opacity = 1 if visible else 0
             card.disabled = not visible
         except Exception:
             pass
+        if not visible:
+            # The card is gone; nothing may keep ticking behind it.
+            self._stop_progress_updates()
+            self.now_playing_time = ""
+            self._duration_ms = 0
+            self._reset_slider()
 
     def play_episode(self, episode):
         """Start playback. Re-selecting the same file toggles pause/resume."""
@@ -885,6 +1149,7 @@ class YouTubePodcastApp(MDApp):
                 self.toggle_play()
                 return
 
+            # Releases the old player *and* cancels its Clock interval.
             self._release_player()
 
             player = MediaPlayer()
@@ -894,9 +1159,13 @@ class YouTubePodcastApp(MDApp):
             player.start()
             self._player = player
             self._playing_path = path
+            self._seeking = False
             self.play_icon = "pause"
             self.now_playing_status = "Playing"
             self.status_text = f"Playing: {os.path.basename(path)[:40]}"
+            self._duration_ms = 0
+            self._refresh_progress()
+            self._start_progress_updates()
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.now_playing_status = "Could not play this file"
@@ -912,10 +1181,14 @@ class YouTubePodcastApp(MDApp):
                 self._player.pause()
                 self.play_icon = "play"
                 self.now_playing_status = "Paused"
+                # Show where we stopped, then stop polling.
+                self._refresh_progress()
+                self._stop_progress_updates()
             else:
                 self._player.start()
                 self.play_icon = "pause"
                 self.now_playing_status = "Playing"
+                self._start_progress_updates()
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self._release_player()
@@ -925,10 +1198,16 @@ class YouTubePodcastApp(MDApp):
             self._release_player()
             self.play_icon = "play"
             self.now_playing_status = "Stopped"
+            # Back to the start of the (still selected) episode.
+            self._show_progress(0, self._duration_ms)
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
 
     def _release_player(self):
+        # Order matters: the interval has to go before the MediaPlayer does,
+        # or a tick can land on a released player and take the app down.
+        self._stop_progress_updates()
+        self._seeking = False
         if self._player:
             try:
                 self._player.stop()
@@ -940,6 +1219,207 @@ class YouTubePodcastApp(MDApp):
                 pass
         self._player = None
         self._playing_path = None
+
+    # --- Position readout, skipping and scrubbing --------------------------
+
+    def skip_back(self):
+        """Jump back 10 seconds (clamped at the start of the episode)."""
+        try:
+            self.seek_by(-SKIP_MS)
+        except Exception as e:  # pragma: no cover - seek_by is already guarded
+            log_crash(type(e), e, e.__traceback__)
+
+    def skip_forward(self):
+        """Jump forward 10 seconds (clamped at the end of the episode)."""
+        try:
+            self.seek_by(SKIP_MS)
+        except Exception as e:  # pragma: no cover - seek_by is already guarded
+            log_crash(type(e), e, e.__traceback__)
+
+    def seek_by(self, delta_ms):
+        """Move the play position by delta_ms, clamped to [0, duration]."""
+        try:
+            if not self._player:
+                return
+            try:
+                delta = int(delta_ms)
+            except (TypeError, ValueError):
+                return
+            position = self._player_position()
+            if position is None:
+                return
+            self.seek_to(position + delta)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def seek_to(self, position_ms):
+        """Seek to an absolute position in milliseconds, clamped to the track."""
+        try:
+            if not self._player:
+                return
+            try:
+                target = int(position_ms)
+            except (TypeError, ValueError):
+                return
+            duration = self._player_duration()
+            if target < 0:
+                target = 0
+            if duration > 0 and target > duration:
+                target = duration
+            self._player.seekTo(target)
+            self._show_progress(target, duration)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def on_seek_active(self, active):
+        """MDSlider.active: True while a finger holds the thumb, False on release.
+
+        Position updates are suspended while dragging so the Clock does not
+        yank the thumb back, and the seek happens once, on release.
+        """
+        try:
+            if active:
+                self._seeking = True
+                return
+            self._seeking = False
+            slider = self._progress_slider()
+            if slider is None:
+                return
+            self.seek_to(float(slider.value) * 1000.0)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def _progress_slider(self):
+        try:
+            return self.root.ids.progress_slider
+        except Exception:
+            return None
+
+    def _player_position(self):
+        """Position in ms, or None when there is no player to ask."""
+        if not self._player:
+            return None
+        try:
+            return max(0, int(self._player.getCurrentPosition()))
+        except Exception:
+            return None
+
+    def _player_duration(self):
+        """Track length in ms (0 when unknown). Cached: it never changes."""
+        if self._duration_ms > 0 or not self._player:
+            return self._duration_ms
+        try:
+            value = int(self._player.getDuration())
+        except Exception:
+            return self._duration_ms
+        if value > 0:
+            self._duration_ms = value
+        return self._duration_ms
+
+    def _is_playing(self):
+        if not self._player:
+            return False
+        try:
+            return bool(self._player.isPlaying())
+        except Exception:
+            return False
+
+    def _start_progress_updates(self):
+        self._stop_progress_updates()
+        try:
+            self._progress_event = Clock.schedule_interval(
+                self._tick_progress, PROGRESS_TICK
+            )
+        except Exception as e:
+            self._progress_event = None
+            log_crash(type(e), e, e.__traceback__)
+
+    def _stop_progress_updates(self):
+        """Cancel the readout interval. Safe to call any number of times."""
+        event = self._progress_event
+        self._progress_event = None
+        if event is None:
+            return
+        try:
+            event.cancel()
+        except Exception:
+            try:
+                Clock.unschedule(event)
+            except Exception:
+                pass
+
+    def _tick_progress(self, *args):
+        """Clock callback. Returns False to unschedule itself when done."""
+        try:
+            if not self._player:
+                self._stop_progress_updates()
+                return False
+            position = self._player_position()
+            if position is None:
+                # The player is gone or unusable - never poll it again.
+                self._stop_progress_updates()
+                return False
+            duration = self._player_duration()
+            if not self._is_playing():
+                if duration > 0 and position >= duration - PLAYBACK_END_SLACK_MS:
+                    self._playback_finished(duration)
+                    return False
+                # Paused (or a stall): show the position, keep waiting.
+            self._show_progress(position, duration)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+            self._stop_progress_updates()
+            return False
+        return True
+
+    def _refresh_progress(self):
+        """Update the readout once, right now."""
+        position = self._player_position()
+        self._show_progress(position or 0, self._player_duration())
+
+    def _playback_finished(self, duration):
+        """The episode ran to the end: stop claiming it is playing."""
+        self._stop_progress_updates()
+        self.play_icon = "play"
+        self.now_playing_status = "Finished"
+        self._show_progress(duration, duration)
+
+    def _show_progress(self, position_ms, duration_ms):
+        """Push a position into the label and the scrub bar."""
+        try:
+            if duration_ms and duration_ms > 0:
+                self.now_playing_time = (
+                    f"{format_clock(position_ms)} / {format_clock(duration_ms)}"
+                )
+            else:
+                self.now_playing_time = format_clock(position_ms)
+            self._update_slider(position_ms, duration_ms)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def _update_slider(self, position_ms, duration_ms):
+        slider = self._progress_slider()
+        if slider is None:
+            return
+        try:
+            if self._seeking or slider.active:
+                return  # never fight the finger
+            duration_s = (duration_ms or 0) / 1000.0
+            slider.max = duration_s if duration_s > 0 else 1
+            position_s = max(0.0, (position_ms or 0) / 1000.0)
+            slider.value = min(position_s, slider.max)
+        except Exception:
+            pass
+
+    def _reset_slider(self):
+        slider = self._progress_slider()
+        if slider is None:
+            return
+        try:
+            slider.value = 0
+            slider.max = 1
+        except Exception:
+            pass
 
     # === EXPORT / DELETE ===
 
@@ -1204,13 +1684,82 @@ class YouTubePodcastApp(MDApp):
         return f"{target}|||{folder}|||{fmt}"
 
     def _send_to_termux(self, payload):
-        """Hand the download off to Termux, one tap if it will allow it."""
-        if self.one_tap_termux and self._run_command_in_termux(payload):
-            return True
-        return self._share_to_termux(payload)
+        """Hand the download to Termux.
+
+        Pressing DOWNLOAD must download.  The chooser is a fallback, never the
+        first thing the user sees: it only appears when Termux cannot be started
+        directly, and when it does the status line says why.
+
+        Returns "direct", "chooser" (the user asked for the menu), "fallback"
+        (the direct route was unavailable), or None if nothing could be started.
+        """
+        if self.termux_direct_launch:
+            if self._termux_service_state() == "ready" and self._run_command_in_termux(payload):
+                self._watch_for_silent_termux()
+                return "direct"
+            if self._share_to_termux(payload):
+                return "fallback"
+            self._report_termux_unreachable()
+            return None
+        if self._share_to_termux(payload):
+            return "chooser"
+        self._report_termux_unreachable()
+        return None
+
+    def _report_termux_unreachable(self):
+        """Last resort: neither route worked, so say so rather than go quiet."""
+        try:
+            self.status_text = (
+                "Could not reach Termux. Install it from F-Droid and run its "
+                "setup, then try again."
+            )
+            safe_snackbar("Could not reach Termux")
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def _termux_service_state(self):
+        """Ask the package manager whether Termux will take a RUN_COMMAND intent.
+
+        startForegroundService() reports success as soon as Android has queued
+        the intent, even when the target does not exist, so the check has to
+        happen first - otherwise a missing or hidden Termux means the user taps
+        DOWNLOAD and *nothing* happens, with nothing to explain it.
+
+        "ready"    resolveService() found the service: it exists, it is
+                   exported, and package visibility lets us see it.
+        "missing"  Termux is not installed, or is invisible to this app (no
+                   <queries> element -> getPackageInfo throws NameNotFound).
+        "blocked"  Termux is installed but the service did not resolve - too
+                   old to have RunCommandService, or disabled.
+        "unknown"  Not on Android at all, or the query itself failed.
+
+        Every one of those except "ready" means: use the chooser, which the
+        system resolves for us and which package visibility never filters.
+        """
+        try:
+            from jnius import autoclass
+
+            Intent = autoclass("android.content.Intent")
+            String = autoclass("java.lang.String")
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+
+            package_manager = PythonActivity.mActivity.getPackageManager()
+            probe = Intent()
+            probe.setClassName(String(TERMUX_PACKAGE), String(TERMUX_RUN_COMMAND_SERVICE))
+            probe.setAction(String(TERMUX_RUN_COMMAND_ACTION))
+            if package_manager.resolveService(probe, 0) is not None:
+                return "ready"
+            try:
+                package_manager.getPackageInfo(String(TERMUX_PACKAGE), 0)
+            except Exception:
+                # PackageManager.NameNotFoundException, via jnius.JavaException.
+                return "missing"
+            return "blocked"
+        except Exception:
+            return "unknown"
 
     def _run_command_in_termux(self, payload):
-        """Termux's RUN_COMMAND service - no chooser, but needs allow-external-apps."""
+        """Termux's RUN_COMMAND service - starts the download with no chooser."""
         try:
             from jnius import autoclass
 
@@ -1219,12 +1768,23 @@ class YouTubePodcastApp(MDApp):
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
 
             intent = Intent()
-            intent.setClassName(String("com.termux"), String("com.termux.app.RunCommandService"))
-            intent.setAction(String("com.termux.RUN_COMMAND"))
+            intent.setClassName(String(TERMUX_PACKAGE), String(TERMUX_RUN_COMMAND_SERVICE))
+            intent.setAction(String(TERMUX_RUN_COMMAND_ACTION))
             intent.putExtra(String("com.termux.RUN_COMMAND_PATH"), String(TERMUX_URL_OPENER))
             intent.putExtra(String("com.termux.RUN_COMMAND_ARGUMENTS"), [String(payload)])
             intent.putExtra(String("com.termux.RUN_COMMAND_BACKGROUND"), String("false"))
+            # 0 = switch to a new session and open Termux, so the download is
+            # visible on screen rather than happening invisibly.
             intent.putExtra(String("com.termux.RUN_COMMAND_SESSION_ACTION"), String("0"))
+            # Termux quotes these back in its own error notification if it
+            # refuses the command, which is the only diagnosis the user gets.
+            intent.putExtra(
+                String("com.termux.RUN_COMMAND_COMMAND_LABEL"), String("YouTube Podcasts")
+            )
+            intent.putExtra(
+                String("com.termux.RUN_COMMAND_COMMAND_DESCRIPTION"),
+                String("Download requested from the YouTube Podcasts app."),
+            )
 
             activity = PythonActivity.mActivity
             try:
@@ -1235,6 +1795,48 @@ class YouTubePodcastApp(MDApp):
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             return False
+
+    def _watch_for_silent_termux(self):
+        """Guard against the one failure Android cannot report back.
+
+        With `allow-external-apps` unset, Termux accepts the intent and drops
+        the command; there is no callback, no exception, no result.  What does
+        happen when it works is that Termux opens its own window, which pauses
+        this app and stops Kivy's clock.  So: if this callback fires roughly on
+        time, we were on screen the whole while, nothing came up, and the user
+        gets told what to change instead of being left staring at nothing.
+        """
+        try:
+            self._termux_handoff_at = time.monotonic()
+            Clock.unschedule(self._termux_silent_hint)
+            Clock.schedule_once(self._termux_silent_hint, TERMUX_SILENT_AFTER)
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    def _termux_silent_hint(self, *_dt):
+        try:
+            started = getattr(self, "_termux_handoff_at", None)
+            if started is None:
+                return
+            self._termux_handoff_at = None
+            if time.monotonic() - started > TERMUX_SILENT_AFTER * 1.5:
+                # The clock was frozen: Termux (or something) took the screen.
+                return
+            self.status_text = (
+                "Termux did not open. Turn off 'Start Termux directly' in "
+                "Settings to pick it from the menu instead."
+            )
+        except Exception as e:
+            log_crash(type(e), e, e.__traceback__)
+
+    @staticmethod
+    def _handoff_status(mode, direct, chooser):
+        """What the status line says, per route the hand-off actually took."""
+        if mode == "direct":
+            return direct
+        if mode == "fallback":
+            return "Termux would not start on its own - pick it from the list."
+        return chooser
 
     def _share_to_termux(self, payload):
         """Send the payload through the Android share chooser."""
@@ -1275,10 +1877,15 @@ class YouTubePodcastApp(MDApp):
                 safe_snackbar("That does not look like a YouTube link")
                 return
 
-            self.status_text = "Handing the download to Termux..."
-            if self._send_to_termux(self._termux_payload(url)):
+            self.status_text = "Starting the download in Termux..."
+            mode = self._send_to_termux(self._termux_payload(url))
+            if mode:
                 self.root.ids.url_input.text = ""
-                self.status_text = "Termux is downloading. Pull down Downloads to refresh."
+                self.status_text = self._handoff_status(
+                    mode,
+                    "Termux is downloading. Pull down Downloads to refresh.",
+                    "Pick Termux from the list to start the download.",
+                )
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.status_text = f"Error: {e}"
@@ -1287,8 +1894,13 @@ class YouTubePodcastApp(MDApp):
         try:
             self.status_text = f"Refreshing {channel_folder}..."
             payload = self._termux_payload(f"REFRESH:{channel_url}", channel_folder)
-            if self._send_to_termux(payload):
-                self.status_text = f"Termux is updating {channel_folder}."
+            mode = self._send_to_termux(payload)
+            if mode:
+                self.status_text = self._handoff_status(
+                    mode,
+                    f"Termux is updating {channel_folder}.",
+                    f"Pick Termux from the list to update {channel_folder}.",
+                )
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
             self.status_text = f"Error: {e}"
@@ -1436,7 +2048,9 @@ class YouTubePodcastApp(MDApp):
                 channel_list.add_widget(item)
 
                 remove_item = OneLineListItem(
-                    text="      ✖ Remove channel",
+                    # Plain ASCII on purpose: the Roboto that ships with Kivy
+                    # has no glyph for U+2716, so it drew as an empty box.
+                    text="      Remove channel",
                     theme_text_color="Custom",
                     text_color=(0.8, 0.3, 0.3, 0.7),
                     on_release=lambda w, u=url: self.remove_channel(u),
