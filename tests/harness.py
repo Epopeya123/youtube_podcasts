@@ -675,9 +675,25 @@ def silence_kivy_logging() -> None:
         return
 
     kivy_logger = logging.getLogger("kivy")
-    kivy_logger.setLevel(logging.CRITICAL + 1)
-    kivy_logger.propagate = False
+    # A logger-level filter is the only reliable gag here:
+    #  * setLevel() gets overwritten when kivy.logger applies KIVY_LOG_LEVEL;
+    #  * propagate = False actively backfires -- pytest's logging plugin walks
+    #    loggerDict and attaches its capture handler to every non-propagating
+    #    logger it finds (_pytest/logging.py).
+    # Logger.handle() consults filters before touching any handler, so this
+    # drops the records outright.
+    if not any(getattr(f, "_harness_gag", False) for f in kivy_logger.filters):
+        gag = _KivyLogGag()
+        kivy_logger.addFilter(gag)
+    kivy_logger.disabled = True
     kivy_logger.addHandler(logging.NullHandler())
+
+
+class _KivyLogGag:
+    _harness_gag = True
+
+    def filter(self, record):  # noqa: A003 - logging.Filter protocol
+        return False
 
 
 def install_window():
