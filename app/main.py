@@ -179,8 +179,6 @@ def find_sidecar_thumbnail(audio_path):
 
 
 KV = '''
-<EpisodeRow@TwoLineAvatarListItem>:
-
 MDScreen:
     md_bg_color: app.theme_cls.bg_dark
 
@@ -359,10 +357,12 @@ MDScreen:
                                 size_hint_x: None
                                 width: dp(100)
 
+                        # No adaptive_height here: it binds height to
+                        # minimum_height, which would fight the explicit height
+                        # that show_add_channel/hide_add_channel set.
                         MDBoxLayout:
                             id: add_channel_box
                             orientation: "vertical"
-                            adaptive_height: True
                             opacity: 0
                             disabled: True
                             size_hint_y: None
@@ -949,9 +949,12 @@ class YouTubePodcastApp(MDApp):
         if not path or not os.path.exists(path):
             safe_snackbar("File not found")
             return
-        threading.Thread(target=self._export_worker, args=(path,), daemon=True).start()
+        # Deliberately on the main thread. This only builds an Intent - there is
+        # no file copying to get off the UI thread - and pyjnius needs an
+        # explicit attach/detach to be used from a worker thread at all.
+        self._start_export_intent(path)
 
-    def _export_worker(self, path):
+    def _start_export_intent(self, path):
         try:
             from jnius import autoclass, cast
 
@@ -976,7 +979,7 @@ class YouTubePodcastApp(MDApp):
             PythonActivity.mActivity.startActivity(chooser)
         except Exception as e:
             log_crash(type(e), e, e.__traceback__)
-            Clock.schedule_once(lambda dt: safe_snackbar("Could not open share menu"))
+            safe_snackbar("Could not open share menu")
 
     def confirm_delete_selected(self):
         episode = self._selected
