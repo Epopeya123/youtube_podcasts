@@ -14,6 +14,7 @@ Speed notes (why this file looks the way it does):
 """
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -49,7 +50,29 @@ DEFAULT_AUDIO_FORMAT = "m4a"
 HTTP_CHUNK_SIZE = 10 * 1024 * 1024
 SOCKET_TIMEOUT = 30
 
+# The oldest yt-dlp release that still downloads from YouTube. YouTube kills
+# yt-dlp's player clients every few months; when that happens, extraction still
+# succeeds (title, thumbnail) but every media request gets HTTP 403 and the fix
+# is always "update yt-dlp". Last purge: 2026-08-17, when ALL formats via the
+# android_vr client started returning 403 - fixed by yt-dlp 2026.08.19, which
+# moved its defaults to the visionos and web clients. Bump this when it happens
+# again.
+MIN_KNOWN_GOOD_YTDLP = (2026, 8, 19)
+
+# A yt-dlp release older than this has decent odds of being broken by the next
+# purge, so nag about it before it strands the user with 403s.
+YTDLP_STALE_AFTER_DAYS = 60
+
+# Hidden flag appended when the script re-runs itself after updating yt-dlp,
+# so a broken update can never loop forever.
+SELF_UPDATE_GUARD_FLAG = "--after-self-update"
+
 _JS_RUNTIME_CACHE = None
+
+# Whether the most recent download_audio() failure was YouTube refusing to
+# serve the media (HTTP 403), as opposed to a network error or a bad video.
+# main() reads this to decide whether updating yt-dlp is worth a shot.
+_LAST_DOWNLOAD_BLOCKED = False
 
 
 # --------------------------------------------------------------------------
@@ -107,6 +130,136 @@ def _node_version_ok(path, minimum=22):
         return int(match.group(1)) >= minimum
     except Exception:
         return True  # Can't tell; let yt-dlp decide.
+
+
+# --------------------------------------------------------------------------
+# Keeping yt-dlp alive
+# --------------------------------------------------------------------------
+
+
+def _ytdlp_version_string():
+    try:
+        return yt_dlp.version.__version__
+    except Exception:
+        return ""
+
+
+def _version_tuple(version_string):
+    """yt-dlp versions are dates: "2026.08.19" -> (2026, 8, 19), else None."""
+    match = re.match(r"(\d{4})\.(\d{1,2})\.(\d{1,2})", version_string or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def ytdlp_freshness(today=None):
+    """"broken" (predates the last known YouTube purge), "stale", or "ok".
+
+    "ok" is also the answer when the version cannot be parsed - an unreadable
+    version is no reason to nag, and the 403 handler catches real breakage.
+    """
+    version = _version_tuple(_ytdlp_version_string())
+    if not version:
+        return "ok"
+    if version < MIN_KNOWN_GOOD_YTDLP:
+        return "broken"
+    try:
+        released = datetime.date(*version)
+    except ValueError:
+        return "ok"
+    today = today or datetime.date.today()
+    if (today - released).days > YTDLP_STALE_AFTER_DAYS:
+        return "stale"
+    return "ok"
+
+
+def _installed_ytdlp_version_str():
+    """Read the yt-dlp version from disk, not from this process's import.
+
+    After a pip upgrade the already-imported module still reports the old
+    version, so ask a fresh interpreter.
+    """
+    try:
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib.metadata as m; print(m.version('yt-dlp'))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def self_update_ytdlp():
+    """Upgrade yt-dlp in place. Returns True when a different version landed.
+
+    Plain "yt-dlp yt-dlp-ejs", NOT "yt-dlp[default]": the [default] extra
+    drags in brotli and pycryptodomex, C extensions with no Termux-compatible
+    wheels, so on the phone that pip run always dies in a source build with no
+    compiler - and pip installs nothing when any build fails. The plain pair
+    is pure Python, installs everywhere, and still fixes 403s; a solver
+    version mismatch is only a runtime warning, and the two track each other
+    on PyPI anyway.
+    """
+    before = _installed_ytdlp_version_str()
+    print("Updating yt-dlp (YouTube regularly breaks old versions)...")
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--quiet",
+                "yt-dlp",
+                "yt-dlp-ejs",
+            ],
+            timeout=600,
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        print("  Could not update yt-dlp (pip failed).", file=sys.stderr)
+        return False
+    after = _installed_ytdlp_version_str()
+    if after and after != before:
+        print(f"  yt-dlp {before or 'unknown'} -> {after}")
+        return True
+    print("  yt-dlp is already the newest release.")
+    return False
+
+
+def restart_after_self_update():
+    """Re-run this exact command on top of the freshly installed yt-dlp.
+
+    The already-imported yt_dlp module cannot be swapped mid-flight, so replace
+    the process. The guard flag makes a second self-update impossible, and the
+    episode index makes the re-run skip whatever already succeeded.
+    """
+    argv = [sys.executable, sys.argv[0], *sys.argv[1:]]
+    if SELF_UPDATE_GUARD_FLAG not in argv:
+        argv.append(SELF_UPDATE_GUARD_FLAG)
+    print("Restarting the download with the new yt-dlp...")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, argv)
+
+
+def _is_blocked_by_youtube(exc):
+    """True when the failure is YouTube refusing to serve us (HTTP 403).
+
+    Extraction succeeds and then googlevideo.com rejects the media bytes -
+    the signature of YouTube blocking the player client an outdated yt-dlp
+    still uses. Everything else (timeouts, 404s, private videos) is not
+    fixable by updating.
+    """
+    return "http error 403" in str(exc).lower()
 
 
 # --------------------------------------------------------------------------
@@ -328,6 +481,8 @@ def build_ydl_opts(output_template, audio_format, embed_thumbnail, polite):
         "no_warnings": False,
         "writethumbnail": True,
         "socket_timeout": SOCKET_TIMEOUT,
+        # Covers 5xx and transport errors only; yt-dlp fails a 403 immediately
+        # rather than retrying it, which is right - see _is_blocked_by_youtube.
         "retries": 10,
         "fragment_retries": 10,
         "http_chunk_size": HTTP_CHUNK_SIZE,
@@ -437,6 +592,24 @@ def _find_thumbnail(search_dir, stem):
     return None
 
 
+def _remove_failed_download_leftovers(output_dir, video_id):
+    """Delete the thumbnail sidecar a failed download leaves behind.
+
+    yt-dlp writes the thumbnail BEFORE it requests any media bytes, so a
+    download that dies (403, network) strands an {id}.webp in the Podcasts
+    folder forever - it is never converted, never renamed, and never referenced
+    by the episode index. Partial audio (.part) is deliberately left alone so a
+    retry can resume it.
+    """
+    for ext in THUMB_EXTS:
+        candidate = os.path.join(output_dir, video_id + ext)
+        try:
+            if os.path.exists(candidate):
+                os.remove(candidate)
+        except OSError:
+            pass
+
+
 def _move_unique(src, dst):
     """Move src to dst, returning the path actually used."""
     if os.path.abspath(src) == os.path.abspath(dst):
@@ -459,6 +632,9 @@ def download_audio(
     Everything comes from a single yt-dlp extraction. Shorts are sorted into a
     subfolder afterwards, using the duration that extraction already gave us.
     """
+    global _LAST_DOWNLOAD_BLOCKED
+    _LAST_DOWNLOAD_BLOCKED = False
+
     os.makedirs(output_dir, exist_ok=True)
     started = time.monotonic()
 
@@ -477,10 +653,23 @@ def download_audio(
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except Exception as e:
-        print(f"  Error downloading {video_id}: {e}", file=sys.stderr)
+        # yt-dlp already printed its own "ERROR: ..." line for this failure;
+        # repeating the prefix made the message read as two stacked errors.
+        message = re.sub(r"^ERROR:\s*", "", str(e).strip())
+        print(f"  Error downloading {video_id}: {message}", file=sys.stderr)
+        if _is_blocked_by_youtube(e):
+            _LAST_DOWNLOAD_BLOCKED = True
+            print(
+                "  YouTube refused to serve this download (HTTP 403). That is\n"
+                "  almost always YouTube blocking an outdated yt-dlp, not a\n"
+                "  problem with this video, this script, or your connection.",
+                file=sys.stderr,
+            )
+        _remove_failed_download_leftovers(output_dir, video_id)
         return None
 
     if not info:
+        _remove_failed_download_leftovers(output_dir, video_id)
         return None
 
     title = info.get("title", "Unknown Title")
@@ -488,6 +677,7 @@ def download_audio(
     audio_path = _find_downloaded_file(info, output_dir, video_id)
     if not audio_path:
         print(f"  Downloaded {video_id} but could not find the audio file.", file=sys.stderr)
+        _remove_failed_download_leftovers(output_dir, video_id)
         return None
 
     thumb_path = _find_thumbnail(output_dir, video_id)
@@ -618,10 +808,43 @@ def main():
         default=None,
         help="Where to keep the episode index (default: next to the audio)",
     )
+    parser.add_argument(
+        "--no-self-update",
+        action="store_true",
+        help="Never run 'pip install --upgrade yt-dlp', even when YouTube "
+        "blocks a download and updating would likely fix it",
+    )
+    parser.add_argument(
+        SELF_UPDATE_GUARD_FLAG,
+        dest="after_self_update",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
     episodes_file = resolve_episodes_file(args.episodes_file, args.output_dir)
     embed_thumbnail = not args.no_embed_thumbnail
+    may_self_update = not args.no_self_update and not args.after_self_update
+
+    # An outdated yt-dlp is the way this tool actually dies in practice:
+    # YouTube blocks its player clients and every download 403s. Handle it
+    # before wasting an extraction on a version known to be refused.
+    freshness = ytdlp_freshness()
+    if freshness == "broken":
+        print(
+            f"yt-dlp {_ytdlp_version_string()} predates YouTube's last purge of "
+            "old versions\nand cannot download anything any more."
+        )
+        if may_self_update and self_update_ytdlp():
+            restart_after_self_update()
+        elif not may_self_update:
+            print("Self-update is off; expect HTTP 403 until yt-dlp is updated.")
+    elif freshness == "stale":
+        print(
+            f"Note: yt-dlp {_ytdlp_version_string()} is over "
+            f"{YTDLP_STALE_AFTER_DAYS} days old. If downloads start failing "
+            "with HTTP 403,\nrun: bash ~/youtube_podcasts/termux/update.sh"
+        )
 
     print(f"Loading existing episodes from {episodes_file}...")
     episodes = load_episodes(episodes_file)
@@ -660,7 +883,22 @@ def main():
                 f"in {time.monotonic() - started:.0f}s"
             )
         else:
+            if _LAST_DOWNLOAD_BLOCKED and may_self_update and self_update_ytdlp():
+                restart_after_self_update()
             print("Download failed.")
+            if _LAST_DOWNLOAD_BLOCKED and args.no_self_update:
+                print(
+                    "Updating yt-dlp will most likely fix this - run:\n"
+                    "bash ~/youtube_podcasts/termux/update.sh"
+                )
+            elif _LAST_DOWNLOAD_BLOCKED:
+                print(
+                    "yt-dlp is already current, so YouTube may have broken "
+                    "downloads for everyone.\nA fixed yt-dlp usually appears "
+                    "within a day or two - run\n"
+                    "bash ~/youtube_podcasts/termux/update.sh tomorrow and "
+                    "try again."
+                )
             sys.exit(1)
         return
 
@@ -682,6 +920,7 @@ def main():
         return
 
     downloaded = 0
+    blocked_seen = False
     for i, video in enumerate(new_videos, 1):
         video_id = video["id"]
         title = video.get("title", video_id)
@@ -703,14 +942,27 @@ def main():
                 f"({metadata['filesize'] / 1024 / 1024:.1f} MB)"
             )
         else:
+            blocked_seen = blocked_seen or _LAST_DOWNLOAD_BLOCKED
             print(f"  Failed to download {video_id}")
+
+    # A 403 from a stale yt-dlp blocks every video, cron reruns included, so
+    # updating and restarting here is what keeps the 6-hour schedule alive.
+    # The episode index makes the restart skip whatever already succeeded.
+    if blocked_seen and downloaded < len(new_videos) and may_self_update and self_update_ytdlp():
+        restart_after_self_update()
 
     episodes.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
     save_episodes(episodes, episodes_file)
-    print(
-        f"\nDone! Downloaded {downloaded} new episodes in "
-        f"{time.monotonic() - started:.0f}s. Total: {len(episodes)} episodes."
-    )
+    if downloaded:
+        print(
+            f"\nDone! Downloaded {downloaded} new episodes in "
+            f"{time.monotonic() - started:.0f}s. Total: {len(episodes)} episodes."
+        )
+    else:
+        # Exit nonzero so the wrapper reports failure instead of
+        # "Done! Saved in ..." when every single download failed.
+        print("\nNo episodes could be downloaded.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

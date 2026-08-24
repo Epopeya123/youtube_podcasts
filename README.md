@@ -103,6 +103,17 @@ This pulls the latest code, upgrades yt-dlp, and refreshes the two scripts that 
 
 > **Node must be v22 or newer.** yt-dlp uses it to solve YouTube's JavaScript challenges; on an older Node it falls back to weaker clients and downloads get slow. `pkg upgrade nodejs-lts` fixes it.
 
+### Every download suddenly fails with "HTTP Error 403: Forbidden"
+
+That is YouTube, not the phone: every few months YouTube blocks the player
+clients that older yt-dlp releases use (most recently on 2026-08-17), and from
+that day every download 403s while titles and thumbnails still load. The fix is
+always a newer yt-dlp. The downloader now handles this itself — when it sees
+that 403 it upgrades yt-dlp and retries once, and it warns at startup when
+yt-dlp is old enough to be at risk. If it still fails, run the update script
+above; and if yt-dlp is already current, YouTube has broken downloads for
+everyone and a fixed release usually appears within a day or two.
+
 ## Option 2: GitHub Actions (cloud)
 
 > Note: YouTube blocks downloads from GitHub's servers. This option works only if YouTube unblocks datacenter IPs or you set up a self-hosted runner.

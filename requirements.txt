@@ -1,1 +1,6 @@
-yt-dlp
+# The floor is the release that survived YouTube's 2026-08-17 purge of the
+# android_vr client - every earlier version gets HTTP 403 on all downloads.
+# Plain packages, NOT "yt-dlp[default]": the extra needs brotli/pycryptodomex,
+# C extensions that cannot build on Termux (no compiler, no Android wheels).
+yt-dlp>=2026.8.19
+yt-dlp-ejs

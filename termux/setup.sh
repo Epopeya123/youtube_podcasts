@@ -30,7 +30,11 @@ if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -lt 22 ]; then
 fi
 
 echo "[3/8] Installing yt-dlp..."
-# mutagen lets yt-dlp write cover art into m4a files without spawning ffmpeg.
+# Plain packages, NOT "yt-dlp[default]": the [default] extra needs brotli and
+# pycryptodomex, C extensions with no Termux wheels, so under set -e that pip
+# run would abort this whole setup in a doomed source build. These three are
+# pure Python and install everywhere. yt-dlp-ejs solves YouTube's JS
+# challenges; mutagen writes cover art into m4a without spawning ffmpeg.
 pip install --upgrade yt-dlp yt-dlp-ejs mutagen
 
 echo "[4/8] Requesting storage access..."

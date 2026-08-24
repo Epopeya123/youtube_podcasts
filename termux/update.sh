@@ -43,8 +43,16 @@ else
     }
 fi
 
-echo "[2/4] Updating yt-dlp..."
-pip install --upgrade --quiet yt-dlp yt-dlp-ejs mutagen || echo "  (pip upgrade skipped)"
+echo "[2/5] Updating yt-dlp..."
+# THE fix for "every download suddenly fails with HTTP 403": YouTube blocks
+# the player clients old yt-dlp versions use (last purge 2026-08-17), and only
+# a newer yt-dlp knows the replacement clients. Plain packages, NOT
+# "yt-dlp[default]" - that extra needs C extensions with no Termux wheels and
+# the pip run would fail in a source build, silently leaving yt-dlp broken.
+pip install --upgrade --quiet yt-dlp yt-dlp-ejs mutagen || {
+    echo "  WARNING: yt-dlp could not be updated."
+    echo "  Downloads may keep failing with HTTP 403 until 'pip install --upgrade yt-dlp' works."
+}
 
 echo "[3/5] Letting the app start downloads directly..."
 # THE bug behind "I pressed DOWNLOAD and nothing happened".  Termux refuses

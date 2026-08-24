@@ -37,6 +37,7 @@ class DownloadPlan:
         audio_source=None,
         report_filepath=True,
         raise_exc=None,
+        write_thumb_before_raise=False,
         return_none=False,
         extra_info=None,
     ):
@@ -53,7 +54,15 @@ class DownloadPlan:
         # When False the info dict omits `requested_downloads`, forcing
         # download_audio to fall back to scanning the output directory.
         self.report_filepath = report_filepath
-        self.raise_exc = raise_exc
+        # An exception instance raises on every extract_info call. A LIST of
+        # instances raises one per call and falls through to the normal
+        # success path once exhausted (fail-then-succeed sequences). Copied so
+        # consuming it can never eat a list the caller also handed elsewhere.
+        self.raise_exc = list(raise_exc) if isinstance(raise_exc, list) else raise_exc
+        # Real yt-dlp writes the thumbnail sidecar before it requests a single
+        # media byte, so a failed download strands one on disk. Set this to
+        # mirror that when raise_exc fires.
+        self.write_thumb_before_raise = write_thumb_before_raise
         self.return_none = return_none
         self.extra_info = extra_info or {}
 
@@ -103,8 +112,15 @@ class _FakeYoutubeDL:
         plan = self.factory.plan
         self.factory.extract_calls.append({"url": url, "download": download})
 
-        if plan.raise_exc is not None:
-            raise plan.raise_exc
+        exc = plan.raise_exc
+        if isinstance(exc, list):
+            exc = exc.pop(0) if exc else None
+        if exc is not None:
+            if plan.write_thumb_before_raise and download:
+                directory = self._output_dir()
+                os.makedirs(directory, exist_ok=True)
+                self._write_thumb(directory, plan)
+            raise exc
         if plan.return_none:
             return None
 

@@ -60,6 +60,13 @@ case "$AUDIO_FORMAT" in
     *) echo "Unknown format '$AUDIO_FORMAT', using m4a."; AUDIO_FORMAT="m4a" ;;
 esac
 
+# The folder lands in a filesystem path; keep separators and dot-dots out of it
+# so a malformed share can never write outside the Podcasts tree.
+FOLDER=$(printf '%s' "$FOLDER" | sed 's|[/\\]|_|g')
+case "$FOLDER" in
+    .|..) FOLDER="" ;;
+esac
+
 # --- Channel refresh or single video? ----------------------------------------
 if [ "${TARGET#REFRESH:}" != "$TARGET" ]; then
     CHANNEL_URL="${TARGET#REFRESH:}"
@@ -104,7 +111,12 @@ if [ $STATUS -eq 0 ]; then
     echo "Done! Saved in Podcasts/$FOLDER - open the app's Downloads tab to play."
 else
     echo "Something went wrong. Check the error above."
+    echo "If it mentions HTTP 403, YouTube has broken the installed yt-dlp;"
+    echo "the downloader updates itself, but the catch-all fix is:"
+    echo "  bash ~/youtube_podcasts/termux/update.sh"
 fi
 echo ""
 echo "Press Enter to close..."
 read -r _
+# Propagate the download's result, not read's, to whoever launched us.
+exit $STATUS

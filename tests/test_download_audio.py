@@ -14,6 +14,7 @@ download_audio.py.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -56,6 +57,7 @@ def _isolate_module_state(monkeypatch):
     about detection override this themselves.
     """
     monkeypatch.setattr(da, "_JS_RUNTIME_CACHE", {}, raising=False)
+    monkeypatch.setattr(da, "_LAST_DOWNLOAD_BLOCKED", False, raising=False)
     monkeypatch.delenv("YTP_EPISODES_FILE", raising=False)
 
 
@@ -716,6 +718,624 @@ class TestDownloadAudioFailures:
         )
         assert da.download_audio("FAILvid1234", str(outdir)) is None
         assert list(outdir.iterdir()) == []
+
+    def test_blocked_403_is_flagged_for_the_caller(self, outdir, monkeypatch):
+        plan = DownloadPlan(
+            video_id="BLOCKEDvid1",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        assert da.download_audio("BLOCKEDvid1", str(outdir)) is None
+        assert da._LAST_DOWNLOAD_BLOCKED is True
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            yt_dlp.utils.DownloadError("ERROR: Video unavailable"),
+            yt_dlp.utils.DownloadError("HTTP Error 404: Not Found"),
+            OSError("Connection reset by peer"),
+        ],
+    )
+    def test_other_failures_are_not_flagged_as_blocked(self, outdir, monkeypatch, exc):
+        _install_fake_ytdlp(monkeypatch, DownloadPlan(video_id="OTHERvid123", raise_exc=exc))
+
+        assert da.download_audio("OTHERvid123", str(outdir)) is None
+        assert da._LAST_DOWNLOAD_BLOCKED is False
+
+    def test_blocked_403_explains_it_is_youtube_not_the_user(
+        self, outdir, monkeypatch, capsys
+    ):
+        plan = DownloadPlan(
+            video_id="BLOCKEDvid1",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        da.download_audio("BLOCKEDvid1", str(outdir))
+
+        err = capsys.readouterr().err
+        assert "YouTube refused" in err
+        assert "yt-dlp" in err
+
+    def test_yt_dlp_error_prefix_is_not_repeated(self, outdir, monkeypatch, capsys):
+        """yt-dlp already printed 'ERROR: ...'; our line should not stack it."""
+        plan = DownloadPlan(
+            video_id="BOOMvid1234",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        da.download_audio("BOOMvid1234", str(outdir))
+
+        err = capsys.readouterr().err
+        assert "Error downloading BOOMvid1234: unable to download" in err
+        assert ": ERROR:" not in err
+
+    def test_failed_download_cleans_up_the_orphaned_thumbnail(self, outdir, monkeypatch):
+        """yt-dlp writes the .webp before the media 403s; it must not linger."""
+        plan = DownloadPlan(
+            video_id="Sg747IAUEfQ",
+            thumb_ext=".webp",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+            write_thumb_before_raise=True,
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        assert da.download_audio("Sg747IAUEfQ", str(outdir)) is None
+        assert list(outdir.iterdir()) == []
+
+    def test_partial_audio_survives_failure_for_resuming(self, outdir, monkeypatch):
+        """.part files resume on retry; only the thumbnail is swept up."""
+        part = outdir / "PARTIALvid1.m4a.part"
+        part.write_bytes(b"half an episode")
+        plan = DownloadPlan(
+            video_id="PARTIALvid1",
+            thumb_ext=".webp",
+            raise_exc=yt_dlp.utils.DownloadError("HTTP Error 403: Forbidden"),
+            write_thumb_before_raise=True,
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        assert da.download_audio("PARTIALvid1", str(outdir)) is None
+        assert [p.name for p in outdir.iterdir()] == ["PARTIALvid1.m4a.part"]
+
+    def test_claimed_success_without_audio_cleans_up_the_thumbnail(
+        self, outdir, monkeypatch
+    ):
+        plan = DownloadPlan(
+            video_id="MISSINGvid",
+            write_audio=False,
+            write_thumb=True,
+            report_filepath=False,
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        assert da.download_audio("MISSINGvid", str(outdir)) is None
+        assert list(outdir.iterdir()) == []
+
+    def test_blocked_flag_resets_on_the_next_download(self, outdir, monkeypatch):
+        """A 403 on one video must not smear onto the next video's failure."""
+        _install_fake_ytdlp(
+            monkeypatch,
+            DownloadPlan(
+                video_id="BLOCKEDvid1",
+                raise_exc=yt_dlp.utils.DownloadError("HTTP Error 403: Forbidden"),
+            ),
+        )
+        da.download_audio("BLOCKEDvid1", str(outdir))
+        assert da._LAST_DOWNLOAD_BLOCKED is True
+
+        _install_fake_ytdlp(
+            monkeypatch,
+            DownloadPlan(
+                video_id="OTHERvid123",
+                raise_exc=yt_dlp.utils.DownloadError("ERROR: Video unavailable"),
+            ),
+        )
+        da.download_audio("OTHERvid123", str(outdir))
+        assert da._LAST_DOWNLOAD_BLOCKED is False
+
+
+# ---------------------------------------------------------------------------
+# Keeping yt-dlp alive: freshness check and self-update
+# ---------------------------------------------------------------------------
+
+
+class TestYtdlpFreshness:
+    @pytest.mark.parametrize(
+        "version,today,expected",
+        [
+            # The last stable release before YouTube's 2026-08-17 purge of the
+            # android_vr client - the exact version this repo got stranded on.
+            ("2026.07.04", datetime.date(2026, 8, 23), "broken"),
+            ("2025.12.30", datetime.date(2026, 8, 23), "broken"),
+            ("2026.08.19", datetime.date(2026, 8, 23), "ok"),
+            # Single-digit date parts, as pip's metadata normalises them.
+            ("2026.8.19", datetime.date(2026, 8, 23), "ok"),
+            # Exactly at the staleness boundary: 60 days is still ok...
+            ("2026.08.19", datetime.date(2026, 10, 18), "ok"),
+            # ...61 days is not.
+            ("2026.08.19", datetime.date(2026, 10, 19), "stale"),
+            ("2026.08.19", datetime.date(2027, 3, 1), "stale"),
+        ],
+    )
+    def test_verdicts(self, monkeypatch, version, today, expected):
+        monkeypatch.setattr(da, "_ytdlp_version_string", lambda: version)
+        assert da.ytdlp_freshness(today=today) == expected
+
+    @pytest.mark.parametrize("version", ["", "unknown", "git-master", None])
+    def test_unparseable_versions_do_not_nag(self, monkeypatch, version):
+        monkeypatch.setattr(da, "_ytdlp_version_string", lambda: version)
+        assert da.ytdlp_freshness(today=datetime.date(2026, 8, 23)) == "ok"
+
+    def test_nightly_style_versions_parse_on_their_date(self, monkeypatch):
+        monkeypatch.setattr(
+            da, "_ytdlp_version_string", lambda: "2026.8.18.122307.dev0"
+        )
+        # One day before the stable fix: still counted as broken, and the
+        # harmless remedy is an upgrade to stable.
+        assert da.ytdlp_freshness(today=datetime.date(2026, 8, 23)) == "broken"
+
+
+class TestSelfUpdate:
+    def _fake_pip(self, monkeypatch, versions, returncode=0, record=None):
+        """Answer version probes from `versions` and accept the pip call."""
+        seen = iter(versions)
+        monkeypatch.setattr(da, "_installed_ytdlp_version_str", lambda: next(seen))
+
+        def run(cmd, **kwargs):
+            if record is not None:
+                record.append(cmd)
+            return types.SimpleNamespace(returncode=returncode)
+
+        monkeypatch.setattr(da.subprocess, "run", run)
+
+    def test_reports_true_when_a_new_version_lands(self, monkeypatch, capsys):
+        record = []
+        self._fake_pip(monkeypatch, ["2026.7.4", "2026.8.19"], record=record)
+
+        assert da.self_update_ytdlp() is True
+        (cmd,) = record
+        # Without --upgrade, pip against an installed yt-dlp is a no-op
+        # ("Requirement already satisfied") and the self-heal is inert.
+        assert "--upgrade" in cmd
+        # The pure-Python pair, never "yt-dlp[default]" - its C-extension
+        # extras cannot build on Termux and pip would install nothing.
+        assert "yt-dlp" in cmd
+        assert "yt-dlp-ejs" in cmd
+        assert not any("[" in part for part in cmd)
+        assert "2026.8.19" in capsys.readouterr().out
+
+    def test_reports_false_when_already_newest(self, monkeypatch, capsys):
+        self._fake_pip(monkeypatch, ["2026.8.19", "2026.8.19"])
+
+        assert da.self_update_ytdlp() is False
+        assert "already the newest" in capsys.readouterr().out
+
+    def test_reports_false_when_pip_fails(self, monkeypatch):
+        self._fake_pip(monkeypatch, ["2026.7.4", "2026.7.4"], returncode=1)
+        assert da.self_update_ytdlp() is False
+
+    def test_reports_false_when_pip_cannot_run_at_all(self, monkeypatch):
+        monkeypatch.setattr(da, "_installed_ytdlp_version_str", lambda: "2026.7.4")
+
+        def explode(cmd, **kwargs):
+            raise OSError("pip is missing")
+
+        monkeypatch.setattr(da.subprocess, "run", explode)
+        assert da.self_update_ytdlp() is False
+
+    def test_restart_appends_the_guard_flag_exactly_once(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(da.os, "execv", lambda exe, argv: calls.append((exe, argv)))
+        monkeypatch.setattr(
+            da.sys, "argv", ["download_audio.py", "--url", "https://youtu.be/x"]
+        )
+
+        da.restart_after_self_update()
+
+        (exe, argv), = calls
+        assert exe == sys.executable
+        assert argv.count(da.SELF_UPDATE_GUARD_FLAG) == 1
+        assert argv[:2] == [sys.executable, "download_audio.py"]
+        assert "--url" in argv
+
+    def test_restart_never_stacks_a_second_guard_flag(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(da.os, "execv", lambda exe, argv: calls.append(argv))
+        monkeypatch.setattr(
+            da.sys, "argv", ["download_audio.py", da.SELF_UPDATE_GUARD_FLAG]
+        )
+
+        da.restart_after_self_update()
+
+        assert calls[0].count(da.SELF_UPDATE_GUARD_FLAG) == 1
+
+
+class TestMainSelfHeal:
+    """main() must turn a blocked 403 into an updated yt-dlp and a re-run."""
+
+    def _run_main(
+        self,
+        monkeypatch,
+        tmp_path,
+        outdir,
+        plan,
+        extra_argv=(),
+        update_succeeds=True,
+    ):
+        _install_fake_ytdlp(monkeypatch, plan)
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+
+        updates = []
+        restarts = []
+        monkeypatch.setattr(
+            da, "self_update_ytdlp", lambda: updates.append(True) or update_succeeds
+        )
+        monkeypatch.setattr(
+            da, "restart_after_self_update", lambda: restarts.append(True)
+        )
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--url",
+                f"https://youtu.be/{plan.video_id}",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+                *extra_argv,
+            ],
+        )
+
+        code = 0
+        try:
+            da.main()
+        except SystemExit as exc:
+            code = exc.code
+        return updates, restarts, code
+
+    def _blocked_plan(self, video_id="BLOCKEDvid1"):
+        return DownloadPlan(
+            video_id=video_id,
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+        )
+
+    def test_blocked_single_video_updates_and_restarts(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        updates, restarts, code = self._run_main(
+            monkeypatch, tmp_path, outdir, self._blocked_plan()
+        )
+        assert updates == [True]
+        assert restarts == [True]
+        assert code == 1  # the faked restart returns; real execv never does
+
+    def test_blocked_single_video_without_an_update_just_fails(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        updates, restarts, code = self._run_main(
+            monkeypatch, tmp_path, outdir, self._blocked_plan(), update_succeeds=False
+        )
+        assert updates == [True]
+        assert restarts == []
+        assert code == 1
+        assert "broken downloads for everyone" in capsys.readouterr().out
+
+    def test_no_self_update_flag_is_respected(self, monkeypatch, tmp_path, outdir):
+        updates, restarts, code = self._run_main(
+            monkeypatch,
+            tmp_path,
+            outdir,
+            self._blocked_plan(),
+            extra_argv=["--no-self-update"],
+        )
+        assert updates == []
+        assert restarts == []
+        assert code == 1
+
+    def test_the_guard_flag_prevents_a_second_update(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        updates, restarts, code = self._run_main(
+            monkeypatch,
+            tmp_path,
+            outdir,
+            self._blocked_plan(),
+            extra_argv=[da.SELF_UPDATE_GUARD_FLAG],
+        )
+        assert updates == []
+        assert restarts == []
+        assert code == 1
+
+    def test_ordinary_failures_do_not_trigger_an_update(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        plan = DownloadPlan(video_id="PLAINfail12", return_none=True)
+        updates, restarts, code = self._run_main(monkeypatch, tmp_path, outdir, plan)
+        assert updates == []
+        assert code == 1
+
+    def test_successful_download_does_not_touch_the_updater(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        plan = DownloadPlan(video_id="HAPPYvid123")
+        updates, restarts, code = self._run_main(monkeypatch, tmp_path, outdir, plan)
+        assert updates == []
+        assert code == 0
+
+    def test_a_known_broken_ytdlp_updates_before_downloading(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        plan = DownloadPlan(video_id="HAPPYvid123")
+        _install_fake_ytdlp(monkeypatch, plan)
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "broken")
+        monkeypatch.setattr(da, "self_update_ytdlp", lambda: True)
+        restarts = []
+        monkeypatch.setattr(
+            da, "restart_after_self_update", lambda: restarts.append(True)
+        )
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--url",
+                "https://youtu.be/HAPPYvid123",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+            ],
+        )
+
+        da.main()
+
+        assert restarts == [True]
+
+    @pytest.mark.parametrize("flag", ["--no-self-update", "--after-self-update"])
+    def test_a_known_broken_ytdlp_respects_the_opt_outs(
+        self, monkeypatch, tmp_path, outdir, flag
+    ):
+        """Neither the user's opt-out nor the re-exec guard may loop pip."""
+        plan = DownloadPlan(video_id="HAPPYvid123")
+        _install_fake_ytdlp(monkeypatch, plan)
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "broken")
+        updates = []
+        monkeypatch.setattr(
+            da, "self_update_ytdlp", lambda: updates.append(True) or True
+        )
+        restarts = []
+        monkeypatch.setattr(
+            da, "restart_after_self_update", lambda: restarts.append(True)
+        )
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--url",
+                "https://youtu.be/HAPPYvid123",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+                flag,
+            ],
+        )
+
+        da.main()
+
+        assert updates == []
+        assert restarts == []
+
+    def test_a_stale_ytdlp_gets_a_note_but_no_forced_update(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        plan = DownloadPlan(video_id="HAPPYvid123")
+        _install_fake_ytdlp(monkeypatch, plan)
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "stale")
+        updates = []
+        monkeypatch.setattr(da, "self_update_ytdlp", lambda: updates.append(True))
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--url",
+                "https://youtu.be/HAPPYvid123",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+            ],
+        )
+
+        da.main()
+
+        assert updates == []
+        assert "days old" in capsys.readouterr().out
+
+
+class TestMainChannelMode:
+    def _run_channel_main(
+        self, monkeypatch, tmp_path, outdir, plan, videos, extra_argv=()
+    ):
+        _install_fake_ytdlp(monkeypatch, plan)
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+        monkeypatch.setattr(da, "fetch_video_list", lambda *a, **kw: videos)
+
+        updates = []
+        restarts = []
+        monkeypatch.setattr(da, "self_update_ytdlp", lambda: updates.append(True) or True)
+        monkeypatch.setattr(
+            da, "restart_after_self_update", lambda: restarts.append(True)
+        )
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+                *extra_argv,
+            ],
+        )
+
+        code = 0
+        try:
+            da.main()
+        except SystemExit as exc:
+            code = exc.code
+        return updates, restarts, code
+
+    def test_every_video_blocked_updates_restarts_and_fails(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        plan = DownloadPlan(
+            video_id="BLOCKEDvid1",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+        )
+        videos = [
+            {"id": "BLOCKEDvid1", "title": "One"},
+            {"id": "BLOCKEDvid2", "title": "Two"},
+        ]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos
+        )
+        assert updates == [True]
+        assert restarts == [True]
+        assert code == 1
+
+    def test_total_failure_without_403_exits_nonzero_but_never_updates(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        plan = DownloadPlan(video_id="PLAINfail12", return_none=True)
+        videos = [{"id": "PLAINfail12", "title": "One"}]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos
+        )
+        assert updates == []
+        assert code == 1
+        assert "No episodes could be downloaded" in capsys.readouterr().out
+
+    def test_a_successful_run_still_exits_zero(self, monkeypatch, tmp_path, outdir):
+        plan = DownloadPlan(video_id="HAPPYvid123")
+        videos = [{"id": "HAPPYvid123", "title": "One"}]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos
+        )
+        assert updates == []
+        assert code == 0
+
+    @pytest.mark.parametrize("flag", ["--no-self-update", "--after-self-update"])
+    def test_channel_mode_respects_the_opt_outs(
+        self, monkeypatch, tmp_path, outdir, flag
+    ):
+        """The cron path is exactly where a guard failure would loop forever."""
+        plan = DownloadPlan(
+            video_id="BLOCKEDvid1",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+        )
+        videos = [{"id": "BLOCKEDvid1", "title": "One"}]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos, extra_argv=[flag]
+        )
+        assert updates == []
+        assert restarts == []
+        assert code == 1
+
+    def test_a_mixed_batch_of_403_and_other_failures_still_updates(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        """One blocked video is enough - a later unrelated failure on another
+        video must not make the run forget it saw YouTube's block."""
+        plan = DownloadPlan(
+            video_id="BLOCKEDvid1",
+            raise_exc=[
+                yt_dlp.utils.DownloadError(
+                    "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+                ),
+                yt_dlp.utils.DownloadError("ERROR: Video unavailable"),
+            ],
+        )
+        videos = [
+            {"id": "BLOCKEDvid1", "title": "One"},
+            {"id": "OTHERvid123", "title": "Two"},
+        ]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos
+        )
+        assert updates == [True]
+        assert restarts == [True]
+        assert code == 1
+
+    def test_a_blocked_video_in_an_otherwise_good_batch_still_updates(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        """Partial success does not excuse a 403: the blocked episode is only
+        reachable after an update, so the update must still happen."""
+        plan = DownloadPlan(
+            video_id="HAPPYvid123",
+            raise_exc=[
+                yt_dlp.utils.DownloadError(
+                    "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+                ),
+            ],
+        )
+        videos = [
+            {"id": "BLOCKEDvid1", "title": "One"},
+            {"id": "HAPPYvid123", "title": "Two"},
+        ]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos
+        )
+        assert updates == [True]
+        assert restarts == [True]
+        assert code == 0  # one episode did land, so the run itself succeeded
+
+    def test_partial_success_without_a_403_still_exits_zero(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        """One saved episode is a success even when another video fails."""
+        plan = DownloadPlan(
+            video_id="HAPPYvid123",
+            raise_exc=[
+                yt_dlp.utils.DownloadError(
+                    "ERROR: Join this channel to get access to members-only content"
+                ),
+            ],
+        )
+        videos = [
+            {"id": "MEMBERSvid1", "title": "One"},
+            {"id": "HAPPYvid123", "title": "Two"},
+        ]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos
+        )
+        assert updates == []  # a non-403 failure must never trigger pip
+        assert restarts == []
+        assert code == 0
+        assert "Done! Downloaded 1" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

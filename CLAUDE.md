@@ -12,6 +12,30 @@ Two tools in one repo:
 - The app sends Termux a payload string: `<url>|||<folder>|||<format>` or `REFRESH:<channel_url>|||<folder>|||<format>`, parsed by `termux/termux-url-opener`.
 - The app never downloads anything itself; it reads the manifests to build the Downloads tab.
 
+## When every download 403s (learned the hard way, 2026-08)
+- **YouTube kills yt-dlp's player clients every few months.** Extraction still
+  works (title, thumbnail download fine) and then googlevideo.com answers
+  HTTP 403 for the media bytes. On 2026-08-17 YouTube 403'd ALL formats via the
+  `android_vr` client that yt-dlp used by default; yt-dlp 2026.08.19 moved its
+  defaults to `visionos` + `web`. The fix is ALWAYS "update yt-dlp" — never
+  header tweaks or stream retries.
+- `download_audio.py` self-heals: `MIN_KNOWN_GOOD_YTDLP` triggers an update
+  before the first extraction, an unexplained 403 triggers
+  `pip install --upgrade "yt-dlp[default]"` plus one guarded re-exec
+  (`--after-self-update`), and a >60-day-old yt-dlp gets a startup warning.
+  When YouTube purges again: bump `MIN_KNOWN_GOOD_YTDLP` to the yt-dlp release
+  that fixes it, and check `_DEFAULT_CLIENTS` in yt-dlp's
+  `extractor/youtube/_video.py` to see what changed.
+- **Install plain `yt-dlp yt-dlp-ejs`, NEVER `yt-dlp[default]`, on the phone.**
+  The [default] extra drags in brotli and pycryptodomex - C extensions with no
+  Termux-compatible wheels (bionic libc matches no manylinux tag) and no
+  compiler on the phone to build them, so pip fails and installs *nothing*.
+  Under `set -e` that aborted setup.sh entirely; in update.sh it silently left
+  yt-dlp at the broken version while printing "Up to date". The plain pair is
+  pure Python; a solver version mismatch is only a runtime warning.
+- A 403 in a dev container proves nothing — this container's IP is blocked by
+  YouTube outright. Only the phone can confirm downloads work.
+
 ## Download speed (learned the hard way)
 - **One extraction per video.** Metadata extraction is the slow step on a phone (player JS + a JS challenge through Node). The old code called `extract_info` twice per video — once just to read the duration — which roughly doubled the wait. Duration comes from the single download extraction; Shorts get sorted afterwards.
 - **`js_runtimes` must be passed explicitly.** yt-dlp only enables **Deno** by default. Termux ships Node, so without `js_runtimes` yt-dlp logs "No supported JavaScript runtime could be found", falls back to weaker player clients and loses formats. Node must be **v22+** or yt-dlp marks it `(unsupported)`.
