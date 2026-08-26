@@ -24,6 +24,13 @@ AUTO_UPDATE=0
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 [ -n "$PODCAST_AUDIO_FORMAT" ] && AUDIO_FORMAT="$PODCAST_AUDIO_FORMAT"
 
+# Optional config keys travel to download_audio.py through the environment -
+# no argv quoting traps, and paths with spaces survive. The script also finds
+# cookies at ~/.config/youtube_podcasts.cookies.txt on its own; COOKIES_FILE
+# is only for a custom location.
+[ -n "$COOKIES_FILE" ] && export YTP_COOKIES_FILE="$COOKIES_FILE"
+[ -n "$PLAYER_CLIENTS" ] && export YTP_PLAYER_CLIENTS="$PLAYER_CLIENTS"
+
 INPUT="$1"
 
 echo "================================================"
@@ -111,9 +118,11 @@ if [ $STATUS -eq 0 ]; then
     echo "Done! Saved in Podcasts/$FOLDER - open the app's Downloads tab to play."
 else
     echo "Something went wrong. Check the error above."
-    echo "If it mentions HTTP 403, YouTube has broken the installed yt-dlp;"
-    echo "the downloader updates itself, but the catch-all fix is:"
-    echo "  bash ~/youtube_podcasts/termux/update.sh"
+    echo "- 'Sign in to confirm you're not a bot': YouTube distrusts this"
+    echo "  network right now, and updating changes nothing. Try again later,"
+    echo "  switch WiFi/mobile data, or set up cookies (README > Cookies)."
+    echo "- 'HTTP Error 403': YouTube broke the installed yt-dlp. It updates"
+    echo "  itself; the catch-all fix is: bash ~/youtube_podcasts/termux/update.sh"
 fi
 echo ""
 echo "Press Enter to close..."

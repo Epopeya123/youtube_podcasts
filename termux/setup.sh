@@ -80,6 +80,14 @@ AUDIO_FORMAT=m4a
 MAX_EPISODES=3
 # Set to 1 to git pull before every download.
 AUTO_UPDATE=0
+# YouTube cookies for the "Sign in to confirm you're not a bot" gate (see
+# the Cookies section of the README). Only needed for a CUSTOM path - a file
+# at ~/.config/youtube_podcasts.cookies.txt is picked up automatically.
+# Quote paths that contain spaces: COOKIES_FILE="/path/with spaces.txt"
+COOKIES_FILE=
+# yt-dlp player_client override for YouTube incidents, comma-separated
+# (e.g. PLAYER_CLIENTS=default,web_embedded). Leave empty normally.
+PLAYER_CLIENTS=
 CONF
 fi
 
@@ -99,6 +107,10 @@ CONFIG_FILE="$HOME/.config/youtube_podcasts.conf"
 AUDIO_FORMAT="m4a"
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+# Optional keys reach download_audio.py via the environment (see the config
+# file); the default cookies location needs no configuration at all.
+[ -n "$COOKIES_FILE" ] && export YTP_COOKIES_FILE="$COOKIES_FILE"
+[ -n "$PLAYER_CLIENTS" ] && export YTP_PLAYER_CLIENTS="$PLAYER_CLIENTS"
 cd "$HOME/youtube_podcasts"
 python download_audio.py \
     --max-episodes 3 \

@@ -58,7 +58,15 @@ def _isolate_module_state(monkeypatch):
     """
     monkeypatch.setattr(da, "_JS_RUNTIME_CACHE", {}, raising=False)
     monkeypatch.setattr(da, "_LAST_DOWNLOAD_BLOCKED", False, raising=False)
+    monkeypatch.setattr(da, "_LAST_DOWNLOAD_BOT_CHECKED", False, raising=False)
+    monkeypatch.setattr(da, "_LAST_LISTING_BOT_CHECKED", False, raising=False)
+    # Keep a developer's real cookie file out of the tests.
+    monkeypatch.setattr(
+        da, "DEFAULT_COOKIES_FILE", "/nonexistent/ytp-test-cookies.txt", raising=False
+    )
     monkeypatch.delenv("YTP_EPISODES_FILE", raising=False)
+    monkeypatch.delenv("YTP_COOKIES_FILE", raising=False)
+    monkeypatch.delenv("YTP_PLAYER_CLIENTS", raising=False)
 
 
 @pytest.fixture
@@ -376,6 +384,33 @@ class TestBuildYdlOpts:
         opts = da.build_ydl_opts(str(tmp_path / "%(id)s.%(ext)s"), "m4a", True, False)
         assert opts["js_runtimes"] == {"node": {"path": "/usr/bin/node"}}
 
+    def test_no_cookies_and_no_client_override_by_default(self, tmp_path):
+        opts = da.build_ydl_opts(str(tmp_path / "%(id)s.%(ext)s"), "m4a", True, False)
+        assert "cookiefile" not in opts
+        assert "extractor_args" not in opts
+
+    def test_cookies_file_is_passed_through(self, tmp_path):
+        opts = da.build_ydl_opts(
+            str(tmp_path / "%(id)s.%(ext)s"),
+            "m4a",
+            True,
+            False,
+            cookies_file="/data/data/com.termux/files/home/.config/c.txt",
+        )
+        assert opts["cookiefile"] == "/data/data/com.termux/files/home/.config/c.txt"
+
+    def test_player_clients_become_extractor_args(self, tmp_path):
+        opts = da.build_ydl_opts(
+            str(tmp_path / "%(id)s.%(ext)s"),
+            "m4a",
+            True,
+            False,
+            player_clients=["default", "web_embedded"],
+        )
+        assert opts["extractor_args"] == {
+            "youtube": {"player_client": ["default", "web_embedded"]}
+        }
+
     @pytest.mark.parametrize("audio_format", da.AUDIO_FORMAT_CHOICES)
     def test_options_are_accepted_by_the_real_yt_dlp(self, tmp_path, audio_format):
         """Constructing a real YoutubeDL validates keys, codecs and PP kwargs.
@@ -383,7 +418,14 @@ class TestBuildYdlOpts:
         No network happens here: the constructor only builds postprocessors.
         """
         opts = dict(
-            da.build_ydl_opts(str(tmp_path / "%(id)s.%(ext)s"), audio_format, True, True)
+            da.build_ydl_opts(
+                str(tmp_path / "%(id)s.%(ext)s"),
+                audio_format,
+                True,
+                True,
+                cookies_file=str(tmp_path / "cookies.txt"),
+                player_clients=["default", "web_embedded"],
+            )
         )
         opts.update(quiet=True, no_warnings=True)
         ydl = yt_dlp.YoutubeDL(opts)
@@ -394,6 +436,102 @@ class TestBuildYdlOpts:
             assert "FFmpegExtractAudioPP" not in built
         else:
             assert "FFmpegExtractAudioPP" in built
+
+
+# ---------------------------------------------------------------------------
+# Cookies and player-client resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCookiesFile:
+    def test_no_configuration_means_no_cookies(self):
+        assert da.resolve_cookies_file(None) is None
+
+    def test_explicit_path_wins(self, tmp_path, monkeypatch):
+        explicit = tmp_path / "explicit.txt"
+        explicit.write_text("# Netscape HTTP Cookie File\n")
+        monkeypatch.setenv("YTP_COOKIES_FILE", str(tmp_path / "env.txt"))
+        assert da.resolve_cookies_file(str(explicit)) == str(explicit)
+
+    def test_env_var_used_when_no_explicit_path(self, tmp_path, monkeypatch):
+        env_file = tmp_path / "env.txt"
+        env_file.write_text("# Netscape HTTP Cookie File\n")
+        monkeypatch.setenv("YTP_COOKIES_FILE", str(env_file))
+        assert da.resolve_cookies_file(None) == str(env_file)
+
+    def test_default_location_is_picked_up_automatically(self, tmp_path, monkeypatch):
+        default = tmp_path / "default-cookies.txt"
+        default.write_text("# Netscape HTTP Cookie File\n")
+        monkeypatch.setattr(da, "DEFAULT_COOKIES_FILE", str(default))
+        assert da.resolve_cookies_file(None) == str(default)
+
+    def test_configured_but_missing_path_warns_and_returns_none(
+        self, tmp_path, capsys
+    ):
+        """Silently proceeding without cookies would leave the user
+        bot-checked with no clue their cookies were never loaded."""
+        result = da.resolve_cookies_file(str(tmp_path / "gone.txt"))
+        assert result is None
+        err = capsys.readouterr().err
+        assert "not found" in err
+        assert "gone.txt" in err
+
+    def test_missing_default_is_silently_no_cookies(self, capsys):
+        assert da.resolve_cookies_file(None) is None
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_tilde_paths_are_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cookie = tmp_path / "c.txt"
+        cookie.write_text("# Netscape HTTP Cookie File\n")
+        assert da.resolve_cookies_file("~/c.txt") == str(cookie)
+
+
+class TestResolvePlayerClients:
+    def test_unset_means_none(self):
+        assert da.resolve_player_clients(None) is None
+
+    def test_comma_list_is_split_and_stripped(self):
+        assert da.resolve_player_clients(" default, web_embedded ,") == [
+            "default",
+            "web_embedded",
+        ]
+
+    def test_env_var_is_the_fallback(self, monkeypatch):
+        monkeypatch.setenv("YTP_PLAYER_CLIENTS", "mweb")
+        assert da.resolve_player_clients(None) == ["mweb"]
+
+    def test_explicit_beats_env(self, monkeypatch):
+        monkeypatch.setenv("YTP_PLAYER_CLIENTS", "mweb")
+        assert da.resolve_player_clients("tv") == ["tv"]
+
+    def test_empty_string_means_none(self):
+        assert da.resolve_player_clients("") is None
+        assert da.resolve_player_clients(" , ") is None
+
+
+class TestCookiesReachTheRealYtDlp:
+    def test_real_yt_dlp_loads_our_cookie_file(self, tmp_path):
+        """End-to-end minus network: the real yt-dlp parses a Netscape file
+        handed through build_ydl_opts and exposes the cookie in its jar."""
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text(
+            "# Netscape HTTP Cookie File\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\ttest-value-123\n"
+        )
+        opts = dict(
+            da.build_ydl_opts(
+                str(tmp_path / "%(id)s.%(ext)s"),
+                "m4a",
+                True,
+                False,
+                cookies_file=str(cookie_file),
+            )
+        )
+        opts.update(quiet=True, no_warnings=True)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            names = {c.name: c.value for c in ydl.cookiejar}
+        assert names.get("SAPISID") == "test-value-123"
 
 
 # ---------------------------------------------------------------------------
@@ -844,6 +982,107 @@ class TestDownloadAudioFailures:
         da.download_audio("OTHERvid123", str(outdir))
         assert da._LAST_DOWNLOAD_BLOCKED is False
 
+    # The exact text from a real phone log, typographic apostrophe included -
+    # matching on the apostrophe is the trap _is_bot_checked's docstring warns
+    # about.
+    BOT_CHECK_MESSAGE = (
+        "ERROR: [youtube] mqb7R-ZPcrI: Sign in to confirm you’re not a bot. "
+        "Use --cookies-from-browser or --cookies for the authentication."
+    )
+
+    def test_bot_check_is_flagged_and_is_not_a_403(self, outdir, monkeypatch):
+        plan = DownloadPlan(
+            video_id="BOTCHECKvid",
+            raise_exc=yt_dlp.utils.DownloadError(self.BOT_CHECK_MESSAGE),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        assert da.download_audio("BOTCHECKvid", str(outdir)) is None
+        assert da._LAST_DOWNLOAD_BOT_CHECKED is True
+        # Critically NOT the flag that triggers the pip self-update - updating
+        # yt-dlp cannot clear a bot check.
+        assert da._LAST_DOWNLOAD_BLOCKED is False
+
+    def test_bot_check_explains_network_reputation(self, outdir, monkeypatch, capsys):
+        plan = DownloadPlan(
+            video_id="BOTCHECKvid",
+            raise_exc=yt_dlp.utils.DownloadError(self.BOT_CHECK_MESSAGE),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        da.download_audio("BOTCHECKvid", str(outdir))
+
+        err = capsys.readouterr().err
+        assert "not a bot" in err
+        assert "cookies" in err
+        assert "updating yt-dlp does" in err  # "...not help"
+
+    def test_bot_check_with_cookies_blames_the_cookies(
+        self, outdir, monkeypatch, tmp_path, capsys
+    ):
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        plan = DownloadPlan(
+            video_id="BOTCHECKvid",
+            raise_exc=yt_dlp.utils.DownloadError(self.BOT_CHECK_MESSAGE),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        da.download_audio("BOTCHECKvid", str(outdir), cookies_file=str(cookie_file))
+
+        err = capsys.readouterr().err
+        assert "expired" in err or "logged out" in err
+
+    def test_age_restriction_is_not_misread_as_a_bot_check(self, outdir, monkeypatch):
+        """"Sign in to confirm your age" is permanent for that video - the
+        wait-or-switch-networks advice would be confidently wrong."""
+        plan = DownloadPlan(
+            video_id="AGEGATEvid1",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: [youtube] AGEGATEvid1: Sign in to confirm your age. "
+                "This video may be inappropriate for some users. "
+                "Use --cookies-from-browser or --cookies for the authentication."
+            ),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        assert da.download_audio("AGEGATEvid1", str(outdir)) is None
+        assert da._LAST_DOWNLOAD_BOT_CHECKED is False
+        assert da._LAST_DOWNLOAD_BLOCKED is False
+
+    def test_a_403_is_not_misread_as_a_bot_check(self, outdir, monkeypatch):
+        plan = DownloadPlan(
+            video_id="BLOCKEDvid1",
+            raise_exc=yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+
+        da.download_audio("BLOCKEDvid1", str(outdir))
+
+        assert da._LAST_DOWNLOAD_BLOCKED is True
+        assert da._LAST_DOWNLOAD_BOT_CHECKED is False
+
+    def test_cookies_and_clients_reach_the_download_opts(
+        self, outdir, monkeypatch, tmp_path
+    ):
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        factory = _install_fake_ytdlp(monkeypatch, DownloadPlan(video_id="HAPPYvid123"))
+
+        da.download_audio(
+            "HAPPYvid123",
+            str(outdir),
+            cookies_file=str(cookie_file),
+            player_clients=["default", "web_embedded"],
+        )
+
+        assert factory.last_opts["cookiefile"] == str(cookie_file)
+        assert factory.last_opts["extractor_args"] == {
+            "youtube": {"player_client": ["default", "web_embedded"]}
+        }
+
 
 # ---------------------------------------------------------------------------
 # Keeping yt-dlp alive: freshness check and self-update
@@ -1169,6 +1408,196 @@ class TestMainSelfHeal:
         assert updates == []
         assert "days old" in capsys.readouterr().out
 
+    def test_a_bot_check_never_triggers_the_updater(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        """Updating yt-dlp cannot clear YouTube's bot gate; pip must stay
+        untouched and the user must be pointed at cookies instead."""
+        plan = DownloadPlan(
+            video_id="BOTCHECKvid",
+            raise_exc=yt_dlp.utils.DownloadError(
+                TestDownloadAudioFailures.BOT_CHECK_MESSAGE
+            ),
+        )
+        updates, restarts, code = self._run_main(monkeypatch, tmp_path, outdir, plan)
+        assert updates == []
+        assert restarts == []
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "bot-checking" in out
+        assert "Cookies" in out
+
+    def test_a_bot_check_with_cookies_says_to_re_export(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        """With cookies already in play, "set up cookies" is the wrong advice -
+        the session went stale and needs a fresh export."""
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        plan = DownloadPlan(
+            video_id="BOTCHECKvid",
+            raise_exc=yt_dlp.utils.DownloadError(
+                TestDownloadAudioFailures.BOT_CHECK_MESSAGE
+            ),
+        )
+        updates, restarts, code = self._run_main(
+            monkeypatch,
+            tmp_path,
+            outdir,
+            plan,
+            extra_argv=["--cookies", str(cookie_file)],
+        )
+        assert updates == []
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "even with cookies" in out
+        assert "fresh cookies" in out
+
+
+class TestMainSessionOpts:
+    """--cookies / env overrides must actually reach the yt-dlp options."""
+
+    def _main_argv(self, tmp_path, outdir, extra):
+        return [
+            "download_audio.py",
+            "--url",
+            "https://youtu.be/HAPPYvid123",
+            "--output-dir",
+            str(outdir),
+            "--episodes-file",
+            str(tmp_path / "episodes.json"),
+            *extra,
+        ]
+
+    def test_cookies_flag_reaches_the_download(self, monkeypatch, tmp_path, outdir):
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        factory = _install_fake_ytdlp(monkeypatch, DownloadPlan(video_id="HAPPYvid123"))
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            self._main_argv(tmp_path, outdir, ["--cookies", str(cookie_file)]),
+        )
+
+        da.main()
+
+        assert factory.last_opts["cookiefile"] == str(cookie_file)
+
+    def test_default_cookie_location_reaches_the_download(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        """Drop the export at the well-known path and everything uses it -
+        the zero-configuration promise the README makes."""
+        default = tmp_path / "youtube_podcasts.cookies.txt"
+        default.write_text("# Netscape HTTP Cookie File\n")
+        monkeypatch.setattr(da, "DEFAULT_COOKIES_FILE", str(default))
+        factory = _install_fake_ytdlp(monkeypatch, DownloadPlan(video_id="HAPPYvid123"))
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+        monkeypatch.setattr(da.sys, "argv", self._main_argv(tmp_path, outdir, []))
+
+        da.main()
+
+        assert factory.last_opts["cookiefile"] == str(default)
+        assert "Using YouTube cookies" in capsys.readouterr().out
+
+    def test_env_player_clients_reach_the_download(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        monkeypatch.setenv("YTP_PLAYER_CLIENTS", "default,web_embedded")
+        factory = _install_fake_ytdlp(monkeypatch, DownloadPlan(video_id="HAPPYvid123"))
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+        monkeypatch.setattr(da.sys, "argv", self._main_argv(tmp_path, outdir, []))
+
+        da.main()
+
+        assert factory.last_opts["extractor_args"] == {
+            "youtube": {"player_client": ["default", "web_embedded"]}
+        }
+
+    def test_channel_listing_fallback_gets_the_cookies_too(
+        self, monkeypatch, tmp_path
+    ):
+        """The bot gate hits extraction, so channel listing needs the same
+        session - not just the downloads."""
+        monkeypatch.chdir(tmp_path)
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        factory = _install_fake_ytdlp(monkeypatch, DownloadPlan())
+
+        da.fetch_videos_from_ytdlp(
+            3,
+            "https://youtube.com/@alpha",
+            cookies_file=str(cookie_file),
+            player_clients=["mweb"],
+        )
+        da.discover_channel_id(
+            "https://youtube.com/@beta", cookies_file=str(cookie_file)
+        )
+
+        for opts in factory.opts_seen:
+            assert opts["cookiefile"] == str(cookie_file)
+        assert factory.opts_seen[0]["extractor_args"] == {
+            "youtube": {"player_client": ["mweb"]}
+        }
+
+    def test_fetch_video_list_threads_cookies_into_the_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.chdir(tmp_path)
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        # No cached channel id and a fake that returns no id: the RSS branch
+        # is skipped and fetch_video_list must fall through to yt-dlp.
+        factory = _install_fake_ytdlp(monkeypatch, DownloadPlan(return_none=True))
+
+        da.fetch_video_list(
+            3,
+            "https://youtube.com/@alpha",
+            cookies_file=str(cookie_file),
+            player_clients=["mweb"],
+        )
+
+        assert factory.opts_seen  # discovery and the listing fallback ran
+        for opts in factory.opts_seen:
+            assert opts["cookiefile"] == str(cookie_file)
+            assert opts["extractor_args"] == {"youtube": {"player_client": ["mweb"]}}
+
+    def test_channel_mode_hands_the_session_to_the_listing(
+        self, monkeypatch, tmp_path, outdir
+    ):
+        default = tmp_path / "youtube_podcasts.cookies.txt"
+        default.write_text("# Netscape HTTP Cookie File\n")
+        monkeypatch.setattr(da, "DEFAULT_COOKIES_FILE", str(default))
+        monkeypatch.setenv("YTP_PLAYER_CLIENTS", "mweb")
+        _install_fake_ytdlp(monkeypatch, DownloadPlan(video_id="HAPPYvid123"))
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+
+        seen = {}
+
+        def fake_list(max_episodes, channel_url, cookies_file=None, player_clients=None):
+            seen["cookies_file"] = cookies_file
+            seen["player_clients"] = player_clients
+            return [{"id": "HAPPYvid123", "title": "One"}]
+
+        monkeypatch.setattr(da, "fetch_video_list", fake_list)
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+            ],
+        )
+
+        da.main()
+
+        assert seen["cookies_file"] == str(default)
+        assert seen["player_clients"] == ["mweb"]
+
 
 class TestMainChannelMode:
     def _run_channel_main(
@@ -1312,6 +1741,98 @@ class TestMainChannelMode:
         assert updates == [True]
         assert restarts == [True]
         assert code == 0  # one episode did land, so the run itself succeeded
+
+    def test_every_video_bot_checked_never_updates_and_points_at_cookies(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        plan = DownloadPlan(
+            video_id="BOTCHECKvid",
+            raise_exc=yt_dlp.utils.DownloadError(
+                TestDownloadAudioFailures.BOT_CHECK_MESSAGE
+            ),
+        )
+        videos = [
+            {"id": "BOTCHECKvid", "title": "One"},
+            {"id": "OTHERvid123", "title": "Two"},
+        ]
+        updates, restarts, code = self._run_channel_main(
+            monkeypatch, tmp_path, outdir, plan, videos
+        )
+        assert updates == []
+        assert restarts == []
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "bot-checking" in out
+        assert "Cookies" in out
+
+    def test_bot_checked_listing_fails_loudly_instead_of_done(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        """The gate can kill a refresh before any download starts: with no
+        cached channel id both listing extractions bot-check, and that must
+        exit nonzero with the cookies advice - not the "Done!" banner."""
+        monkeypatch.chdir(tmp_path)  # no .channel_id cache
+        plan = DownloadPlan(
+            raise_exc=yt_dlp.utils.DownloadError(
+                TestDownloadAudioFailures.BOT_CHECK_MESSAGE
+            ),
+        )
+        _install_fake_ytdlp(monkeypatch, plan)
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+        updates = []
+        monkeypatch.setattr(
+            da, "self_update_ytdlp", lambda: updates.append(True) or True
+        )
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--channel-url",
+                "https://youtube.com/@alpha",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+            ],
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            da.main()
+
+        assert excinfo.value.code == 1
+        assert updates == []
+        out = capsys.readouterr().out
+        assert "bot-checking" in out
+        assert "Cookies" in out
+
+    def test_a_plain_empty_listing_still_returns_softly(
+        self, monkeypatch, tmp_path, outdir, capsys
+    ):
+        """An empty listing without a bot check keeps the old soft exit -
+        the GitHub Actions feed job runs on YouTube-blocked runners and must
+        not go permanently red over it."""
+        monkeypatch.chdir(tmp_path)
+        plan = DownloadPlan(return_none=True)
+        _install_fake_ytdlp(monkeypatch, plan)
+        monkeypatch.setattr(da, "ytdlp_freshness", lambda today=None: "ok")
+        monkeypatch.setattr(
+            da.sys,
+            "argv",
+            [
+                "download_audio.py",
+                "--channel-url",
+                "https://youtube.com/@alpha",
+                "--output-dir",
+                str(outdir),
+                "--episodes-file",
+                str(tmp_path / "episodes.json"),
+            ],
+        )
+
+        da.main()  # returns, no SystemExit
+
+        assert "Could not fetch any videos" in capsys.readouterr().out
 
     def test_partial_success_without_a_403_still_exits_zero(
         self, monkeypatch, tmp_path, outdir, capsys

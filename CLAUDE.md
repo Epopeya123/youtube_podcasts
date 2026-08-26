@@ -36,6 +36,39 @@ Two tools in one repo:
 - A 403 in a dev container proves nothing — this container's IP is blocked by
   YouTube outright. Only the phone can confirm downloads work.
 
+## "Sign in to confirm you're not a bot" (learned the hard way, 2026-08)
+- **This is NOT the 403 and must never trigger the pip self-update.** It fires
+  at *extraction* (even the title goes missing: "No title found in player
+  responses"), and it is YouTube's IP-reputation gate on logged-out sessions —
+  intermittent, "worked yesterday, fails today" on a phone network. Measured
+  2026-08-26: the yt-dlp nightly's whole YouTube extractor was byte-identical
+  to stable, so "just update" was provably useless. `_is_bot_checked()` is a
+  separate detector from `_is_blocked_by_youtube()` for exactly this reason.
+- Match on `"sign in to confirm"` **and** `"not a bot"` — YouTube writes
+  "you're" with a typographic apostrophe (U+2019), so the full sentence is a
+  trap; "Sign in to confirm your age" (age restriction) must NOT match because
+  waiting/network-hopping never clears an age gate; and bare "bot" is unsafe
+  because an 11-char video id can contain it.
+- The gate also fires while LISTING a channel (`_LAST_LISTING_BOT_CHECKED`);
+  without that flag a bot-checked refresh ended in the wrapper's "Done!"
+  banner with exit 0 and zero downloads.
+- **Remedies, in order:** wait a few hours / hop networks (fresh CGNAT lease);
+  cookies (`~/.config/youtube_podcasts.cookies.txt`, Netscape format — the
+  gate does not apply to logged-in sessions; export via the wiki's
+  incognito-robots.txt procedure or the cookies rot); PO-token provider
+  (bgutil) as the heavy artillery. Client rotation does not beat this gate.
+- yt-dlp REWRITES the cookie file on every run (cookies rotate). It must be
+  writable, and it lives in Termux private storage on purpose — it grants the
+  whole account.
+- `COOKIES_FILE`/`PLAYER_CLIENTS` in the conf reach download_audio.py as
+  `YTP_COOKIES_FILE`/`YTP_PLAYER_CLIENTS` env vars — exported by
+  termux-url-opener AND the run_podcast_download.sh heredocs. **That heredoc
+  exists twice** (setup.sh and update.sh) and update.sh rewrites the installed
+  copy on every run: edit both or the change silently reverts.
+- `PLAYER_CLIENTS` (→ yt-dlp `extractor_args: {youtube: {player_client: ...}}`)
+  is the incident lever: when maintainers say "use client X", it is a config
+  edit, not a code change.
+
 ## Download speed (learned the hard way)
 - **One extraction per video.** Metadata extraction is the slow step on a phone (player JS + a JS challenge through Node). The old code called `extract_info` twice per video — once just to read the duration — which roughly doubled the wait. Duration comes from the single download extraction; Shorts get sorted afterwards.
 - **`js_runtimes` must be passed explicitly.** yt-dlp only enables **Deno** by default. Termux ships Node, so without `js_runtimes` yt-dlp logs "No supported JavaScript runtime could be found", falls back to weaker player clients and loses formats. Node must be **v22+** or yt-dlp marks it `(unsupported)`.

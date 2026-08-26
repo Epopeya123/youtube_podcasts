@@ -114,6 +114,71 @@ yt-dlp is old enough to be at risk. If it still fails, run the update script
 above; and if yt-dlp is already current, YouTube has broken downloads for
 everyone and a fixed release usually appears within a day or two.
 
+### "Sign in to confirm you're not a bot"
+
+A different beast from the 403: this one blocks the *information about* the
+video (even the title goes missing) and it means YouTube currently distrusts
+your network address — it gates logged-out sessions on IP reputation. Updating
+yt-dlp does **not** help. It is usually temporary and often clears on its own:
+
+* Try again in a few hours.
+* Switch networks — WiFi ↔ mobile data, or toggle airplane mode briefly on
+  mobile data so your carrier hands you a fresh address.
+
+The reliable, permanent fix is **cookies** — see the next section. YouTube
+does not bot-check a logged-in session.
+
+### Cookies
+
+Give the downloader an exported YouTube login and it runs as a logged-in
+session: no more bot checks, and a higher download rate limit. One caution
+first: the login is a real login. YouTube can in principle restrict an account
+it thinks is misbehaving, so consider a throwaway Google account, and this
+tool's few-downloads-a-day pace is well within safe territory.
+
+Export the cookies **so they don't expire** (YouTube rotates cookies in open
+browser tabs; this procedure sidesteps that):
+
+1. On the phone, install **Firefox** (or a Firefox fork) and its
+   **"cookies.txt"** extension. (Avoid the similarly named "Get cookies.txt"
+   extension — it was reported as malware; "Get cookies.txt LOCALLY" is the
+   safe Chrome-family one.)
+2. **Allow the extension in private browsing** — Firefox blocks extensions
+   there by default, and without this the export cannot see the private
+   session at all. Tick *Allow in private browsing* in the dialog shown right
+   after installing (or later under Settings → Extensions → cookies.txt →
+   *Run in private browsing*).
+3. Open a **private/incognito window**, log in to youtube.com there.
+4. In that same tab, go to `https://www.youtube.com/robots.txt` (keep this as
+   the only private tab).
+5. Use the extension to export cookies for youtube.com in **Netscape format**,
+   save the file (it usually lands in Downloads).
+6. **Close the private window** and never log into that session again.
+
+Then, in Termux, move the export to the place the downloader checks
+automatically:
+
+```bash
+mkdir -p ~/.config
+mv ~/storage/shared/Download/youtube.com_cookies.txt ~/.config/youtube_podcasts.cookies.txt
+```
+
+(Adjust the first path to whatever the export was named.) That's it — every
+download, shared link, and scheduled check now uses it; the run prints
+`Using YouTube cookies from ...` so you can see it working. The file is kept
+inside Termux's private home on purpose: it grants access to the account, and
+shared storage is readable by any app with storage permission. The downloader
+refreshes the file as YouTube rotates the cookies; if months later you get
+bot-checked *with* cookies, the session expired — export fresh ones the same
+way. A custom location can be set with `COOKIES_FILE=` in
+`~/.config/youtube_podcasts.conf` or the `--cookies` flag.
+
+For the heaviest-duty setup (what yt-dlp's maintainers recommend for
+persistent trouble), there is also the
+[bgutil PO-token provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider),
+which runs a small Node service in Termux — not needed unless cookies fail
+you.
+
 ## Option 2: GitHub Actions (cloud)
 
 > Note: YouTube blocks downloads from GitHub's servers. This option works only if YouTube unblocks datacenter IPs or you set up a self-hosted runner.

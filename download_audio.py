@@ -67,12 +67,30 @@ YTDLP_STALE_AFTER_DAYS = 60
 # so a broken update can never loop forever.
 SELF_UPDATE_GUARD_FLAG = "--after-self-update"
 
+# Where exported YouTube cookies are looked for when --cookies is not given.
+# Cookies are the reliable answer to YouTube's "Sign in to confirm you're not
+# a bot" gate: it targets logged-out sessions, and with cookies yt-dlp runs
+# logged-in. Deliberately inside the Termux home, not shared storage - the
+# file grants full account access and shared storage is readable by any app
+# with the storage permission.
+DEFAULT_COOKIES_FILE = "~/.config/youtube_podcasts.cookies.txt"
+
 _JS_RUNTIME_CACHE = None
 
 # Whether the most recent download_audio() failure was YouTube refusing to
 # serve the media (HTTP 403), as opposed to a network error or a bad video.
 # main() reads this to decide whether updating yt-dlp is worth a shot.
 _LAST_DOWNLOAD_BLOCKED = False
+
+# Whether it was YouTube's "Sign in to confirm you're not a bot" gate instead.
+# Kept apart from _LAST_DOWNLOAD_BLOCKED on purpose: that flag triggers the
+# pip self-update, which cannot clear a bot check.
+_LAST_DOWNLOAD_BOT_CHECKED = False
+
+# The same gate, seen while LISTING a channel - it fires at extraction time,
+# so it can kill a refresh before a single download is attempted, and that
+# must not end in the wrapper's "Done!" banner.
+_LAST_LISTING_BOT_CHECKED = False
 
 
 # --------------------------------------------------------------------------
@@ -262,6 +280,99 @@ def _is_blocked_by_youtube(exc):
     return "http error 403" in str(exc).lower()
 
 
+def _is_bot_checked(exc):
+    """True when YouTube's "Sign in to confirm you're not a bot" gate fired.
+
+    This one hits at EXTRACTION time (even the title goes missing) and is an
+    IP-reputation gate on logged-out sessions - intermittent, and "worked
+    yesterday, fails today" on a phone network is its classic look. Updating
+    yt-dlp does NOT clear it (measured 2026-08-26: the nightly's YouTube
+    extractor was byte-identical to stable), which is why this is not folded
+    into _is_blocked_by_youtube. What clears it: waiting, a fresh IP, or
+    cookies (a logged-in session is not gated).
+
+    Matched on "sign in to confirm" plus "not a bot", both apostrophe-free:
+    YouTube writes "you're" with a typographic apostrophe, so the full
+    sentence is a trap - and "Sign in to confirm your age" (an age-restricted
+    video) must NOT match, because waiting or switching networks never clears
+    an age gate. Not bare "bot" either: video ids can contain "bot".
+    """
+    message = str(exc).lower()
+    return "sign in to confirm" in message and "not a bot" in message
+
+
+# --------------------------------------------------------------------------
+# Cookies and player-client overrides
+# --------------------------------------------------------------------------
+
+
+def resolve_cookies_file(explicit=None):
+    """Pick the cookies file: --cookies, then $YTP_COOKIES_FILE, then the
+    default location when a file is actually there. Returns None for "no
+    cookies".
+
+    A configured-but-missing path warns instead of silently proceeding:
+    yt-dlp ignores an unreadable cookiefile, so the user would keep being
+    bot-checked with no clue their cookies were never loaded.
+    """
+    for source, path in (
+        ("--cookies", explicit),
+        ("YTP_COOKIES_FILE", os.environ.get("YTP_COOKIES_FILE")),
+    ):
+        if path:
+            expanded = os.path.expanduser(path)
+            if os.path.exists(expanded):
+                return expanded
+            print(
+                f"WARNING: cookies file from {source} not found: {path} - "
+                "downloading without cookies.",
+                file=sys.stderr,
+            )
+            return None
+    default = os.path.expanduser(DEFAULT_COOKIES_FILE)
+    return default if os.path.exists(default) else None
+
+
+def resolve_player_clients(explicit=None):
+    """Optional yt-dlp player_client override, as a list, or None.
+
+    The escape hatch for YouTube incidents: when a client breaks, the
+    maintainers' advice is a player_client override (e.g.
+    "default,web_embedded"), and this makes that a config change instead of
+    a code change. Comes from --player-clients or $YTP_PLAYER_CLIENTS.
+    """
+    raw = explicit or os.environ.get("YTP_PLAYER_CLIENTS") or ""
+    clients = [part.strip() for part in raw.split(",") if part.strip()]
+    return clients or None
+
+
+def _print_bot_check_advice(cookies_file):
+    """The closing what-now line for a run that hit the bot gate."""
+    if cookies_file:
+        print(
+            "YouTube bot-checked this network even with cookies - the exported "
+            "session may\nhave expired or been logged out. Export fresh cookies "
+            "(README > Cookies) and\nreplace the file."
+        )
+    else:
+        print(
+            "YouTube is bot-checking this network right now. Try again later, "
+            "switch\nnetworks, or set up cookies - see the Cookies section of "
+            "the README."
+        )
+
+
+def _apply_session_opts(opts, cookies_file, player_clients):
+    """Fold the cookies/client choices into a ydl_opts dict, uniformly for
+    downloads, channel-id discovery, and channel listing - the bot check
+    gates all three the same way."""
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+    if player_clients:
+        opts["extractor_args"] = {"youtube": {"player_client": list(player_clients)}}
+    return opts
+
+
 # --------------------------------------------------------------------------
 # Episode index
 # --------------------------------------------------------------------------
@@ -351,7 +462,7 @@ def _store_channel_id(channel_url, channel_id):
         pass
 
 
-def discover_channel_id(channel_url=CHANNEL_URL):
+def discover_channel_id(channel_url=CHANNEL_URL, cookies_file=None, player_clients=None):
     """Use yt-dlp to discover the channel ID from the handle."""
     cached = _load_channel_id_cache().get(channel_url)
     if cached:
@@ -365,6 +476,7 @@ def discover_channel_id(channel_url=CHANNEL_URL):
         "playlistend": 1,
         "socket_timeout": SOCKET_TIMEOUT,
     }
+    _apply_session_opts(ydl_opts, cookies_file, player_clients)
     runtimes = detect_js_runtimes()
     if runtimes:
         ydl_opts["js_runtimes"] = runtimes
@@ -378,6 +490,9 @@ def discover_channel_id(channel_url=CHANNEL_URL):
                     _store_channel_id(channel_url, channel_id)
                     return channel_id
     except Exception as e:
+        global _LAST_LISTING_BOT_CHECKED
+        if _is_bot_checked(e):
+            _LAST_LISTING_BOT_CHECKED = True
         print(f"Could not discover channel ID: {e}")
     return None
 
@@ -410,7 +525,9 @@ def fetch_videos_from_rss(channel_id):
         return []
 
 
-def fetch_videos_from_ytdlp(max_episodes, channel_url=CHANNEL_URL):
+def fetch_videos_from_ytdlp(
+    max_episodes, channel_url=CHANNEL_URL, cookies_file=None, player_clients=None
+):
     """Fetch list of recent videos using yt-dlp (fallback)."""
     print("Trying yt-dlp to fetch video list...")
     ydl_opts = {
@@ -420,6 +537,7 @@ def fetch_videos_from_ytdlp(max_episodes, channel_url=CHANNEL_URL):
         "playlistend": max_episodes * 3,
         "socket_timeout": SOCKET_TIMEOUT,
     }
+    _apply_session_opts(ydl_opts, cookies_file, player_clients)
     runtimes = detect_js_runtimes()
     if runtimes:
         ydl_opts["js_runtimes"] = runtimes
@@ -431,19 +549,26 @@ def fetch_videos_from_ytdlp(max_episodes, channel_url=CHANNEL_URL):
                 print(f"Found {len(videos)} videos via yt-dlp.")
                 return videos
     except Exception as e:
+        global _LAST_LISTING_BOT_CHECKED
+        if _is_bot_checked(e):
+            _LAST_LISTING_BOT_CHECKED = True
         print(f"yt-dlp fetch failed: {e}")
     return []
 
 
-def fetch_video_list(max_episodes, channel_url=CHANNEL_URL):
+def fetch_video_list(
+    max_episodes, channel_url=CHANNEL_URL, cookies_file=None, player_clients=None
+):
     """Fetch list of recent videos, trying RSS first then yt-dlp."""
-    channel_id = discover_channel_id(channel_url)
+    global _LAST_LISTING_BOT_CHECKED
+    _LAST_LISTING_BOT_CHECKED = False
+    channel_id = discover_channel_id(channel_url, cookies_file, player_clients)
     if channel_id:
         videos = fetch_videos_from_rss(channel_id)
         if videos:
             return videos
 
-    return fetch_videos_from_ytdlp(max_episodes, channel_url)
+    return fetch_videos_from_ytdlp(max_episodes, channel_url, cookies_file, player_clients)
 
 
 # --------------------------------------------------------------------------
@@ -473,7 +598,14 @@ def is_short_video(duration, title=""):
     return False
 
 
-def build_ydl_opts(output_template, audio_format, embed_thumbnail, polite):
+def build_ydl_opts(
+    output_template,
+    audio_format,
+    embed_thumbnail,
+    polite,
+    cookies_file=None,
+    player_clients=None,
+):
     """Assemble yt-dlp options tuned for downloading on a phone."""
     opts = {
         "outtmpl": output_template,
@@ -490,6 +622,7 @@ def build_ydl_opts(output_template, audio_format, embed_thumbnail, polite):
         "noplaylist": True,
     }
 
+    _apply_session_opts(opts, cookies_file, player_clients)
     runtimes = detect_js_runtimes()
     if runtimes:
         opts["js_runtimes"] = runtimes
@@ -626,14 +759,17 @@ def download_audio(
     audio_format=DEFAULT_AUDIO_FORMAT,
     embed_thumbnail=True,
     polite=False,
+    cookies_file=None,
+    player_clients=None,
 ):
     """Download audio for one video. Returns a metadata dict, or None on failure.
 
     Everything comes from a single yt-dlp extraction. Shorts are sorted into a
     subfolder afterwards, using the duration that extraction already gave us.
     """
-    global _LAST_DOWNLOAD_BLOCKED
+    global _LAST_DOWNLOAD_BLOCKED, _LAST_DOWNLOAD_BOT_CHECKED
     _LAST_DOWNLOAD_BLOCKED = False
+    _LAST_DOWNLOAD_BOT_CHECKED = False
 
     os.makedirs(output_dir, exist_ok=True)
     started = time.monotonic()
@@ -644,6 +780,8 @@ def download_audio(
         audio_format,
         embed_thumbnail,
         polite,
+        cookies_file,
+        player_clients,
     )
     ydl_opts["progress_hooks"] = [progress.hook]
     ydl_opts["postprocessor_hooks"] = [progress.pp_hook]
@@ -657,7 +795,28 @@ def download_audio(
         # repeating the prefix made the message read as two stacked errors.
         message = re.sub(r"^ERROR:\s*", "", str(e).strip())
         print(f"  Error downloading {video_id}: {message}", file=sys.stderr)
-        if _is_blocked_by_youtube(e):
+        if _is_bot_checked(e):
+            _LAST_DOWNLOAD_BOT_CHECKED = True
+            if cookies_file:
+                print(
+                    "  YouTube bot-checked this download even though cookies\n"
+                    "  were sent. The exported session may have expired or\n"
+                    "  been logged out - export fresh cookies (README >\n"
+                    "  Cookies) and replace the file.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "  YouTube wants proof you are not a bot before it will\n"
+                    "  even describe this video. That is about this network's\n"
+                    "  reputation, not this script - and updating yt-dlp does\n"
+                    "  not help. It usually passes: try again in a few hours,\n"
+                    "  or switch networks (WiFi <-> mobile data). The reliable\n"
+                    "  fix is YouTube cookies - see the Cookies section of the\n"
+                    "  README.",
+                    file=sys.stderr,
+                )
+        elif _is_blocked_by_youtube(e):
             _LAST_DOWNLOAD_BLOCKED = True
             print(
                 "  YouTube refused to serve this download (HTTP 403). That is\n"
@@ -809,6 +968,23 @@ def main():
         help="Where to keep the episode index (default: next to the audio)",
     )
     parser.add_argument(
+        "--cookies",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Netscape-format YouTube cookies, for YouTube's 'Sign in to "
+        f"confirm you're not a bot' gate (default: {DEFAULT_COOKIES_FILE} "
+        "when that file exists)",
+    )
+    parser.add_argument(
+        "--player-clients",
+        type=str,
+        default=None,
+        metavar="LIST",
+        help="Comma-separated yt-dlp player_client override (e.g. "
+        "'default,web_embedded') for when YouTube breaks specific clients",
+    )
+    parser.add_argument(
         "--no-self-update",
         action="store_true",
         help="Never run 'pip install --upgrade yt-dlp', even when YouTube "
@@ -825,6 +1001,12 @@ def main():
     episodes_file = resolve_episodes_file(args.episodes_file, args.output_dir)
     embed_thumbnail = not args.no_embed_thumbnail
     may_self_update = not args.no_self_update and not args.after_self_update
+    cookies_file = resolve_cookies_file(args.cookies)
+    player_clients = resolve_player_clients(args.player_clients)
+    if cookies_file:
+        print(f"Using YouTube cookies from {cookies_file}")
+    if player_clients:
+        print(f"Player clients override: {', '.join(player_clients)}")
 
     # An outdated yt-dlp is the way this tool actually dies in practice:
     # YouTube blocks its player clients and every download 403s. Handle it
@@ -873,6 +1055,8 @@ def main():
             audio_format=args.audio_format,
             embed_thumbnail=embed_thumbnail,
             polite=False,
+            cookies_file=cookies_file,
+            player_clients=player_clients,
         )
         if metadata:
             episodes.append(metadata)
@@ -886,7 +1070,9 @@ def main():
             if _LAST_DOWNLOAD_BLOCKED and may_self_update and self_update_ytdlp():
                 restart_after_self_update()
             print("Download failed.")
-            if _LAST_DOWNLOAD_BLOCKED and args.no_self_update:
+            if _LAST_DOWNLOAD_BOT_CHECKED:
+                _print_bot_check_advice(cookies_file)
+            elif _LAST_DOWNLOAD_BLOCKED and args.no_self_update:
                 print(
                     "Updating yt-dlp will most likely fix this - run:\n"
                     "bash ~/youtube_podcasts/termux/update.sh"
@@ -904,9 +1090,16 @@ def main():
 
     # Channel mode
     print("Fetching video list...")
-    videos = fetch_video_list(args.max_episodes, args.channel_url)
+    videos = fetch_video_list(
+        args.max_episodes, args.channel_url, cookies_file, player_clients
+    )
 
     if not videos:
+        if _LAST_LISTING_BOT_CHECKED:
+            # The gate killed the refresh before any download could start -
+            # exit nonzero so the wrapper does not print its "Done!" banner.
+            _print_bot_check_advice(cookies_file)
+            sys.exit(1)
         print("WARNING: Could not fetch any videos. YouTube may be blocking this IP.")
         print("Try running locally or check the logs for details.")
         return
@@ -921,6 +1114,7 @@ def main():
 
     downloaded = 0
     blocked_seen = False
+    bot_checked_seen = False
     for i, video in enumerate(new_videos, 1):
         video_id = video["id"]
         title = video.get("title", video_id)
@@ -932,6 +1126,8 @@ def main():
             audio_format=args.audio_format,
             embed_thumbnail=embed_thumbnail,
             polite=len(new_videos) > 1,
+            cookies_file=cookies_file,
+            player_clients=player_clients,
         )
         if metadata:
             episodes.append(metadata)
@@ -943,6 +1139,7 @@ def main():
             )
         else:
             blocked_seen = blocked_seen or _LAST_DOWNLOAD_BLOCKED
+            bot_checked_seen = bot_checked_seen or _LAST_DOWNLOAD_BOT_CHECKED
             print(f"  Failed to download {video_id}")
 
     # A 403 from a stale yt-dlp blocks every video, cron reruns included, so
@@ -962,6 +1159,8 @@ def main():
         # Exit nonzero so the wrapper reports failure instead of
         # "Done! Saved in ..." when every single download failed.
         print("\nNo episodes could be downloaded.")
+        if bot_checked_seen:
+            _print_bot_check_advice(cookies_file)
         sys.exit(1)
 
 
